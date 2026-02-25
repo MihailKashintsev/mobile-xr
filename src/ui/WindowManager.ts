@@ -1,36 +1,35 @@
 /**
- * WindowManager — окна в мировом пространстве
+ * WindowManager — окна в мировом пространстве (Quest 3 style)
  *
- * Перемещение: ущипни drag-bar снизу → тащи.
- * Позиция рассчитывается raycast на Z-плоскость окна (надёжно).
+ * Ключевые особенности:
+ * - Окна закреплены в world space, не следуют за головой
+ * - При инициализации позиционируются перед камерой
+ * - Depth occlusion: руки перекрывают/перекрываются окнами через Z-test
+ * - Кнопки не срабатывают если палец за плоскостью окна
  */
 
 import * as THREE from 'three'
 import type { GestureResult } from '../xr/GestureDetector'
 
-// ─── Константы ────────────────────────────────────────────────────────────────
-const DRAG_BAR_H   = 0.10
-const TITLE_BAR_H  = 0.13
+const DRAG_BAR_H  = 0.10
+const TITLE_BAR_H = 0.13
 
 const C = {
-  bg:           0x0d1117,
-  title:        0x161b22,
-  border:       0x30363d,
-  dragBar:      0x1e2430,
-  dragBarHov:   0x2a3441,
-  accent:       0x6366f1,
-  accentHov:    0x818cf8,
-  btnClose:     0xff5f56,
-  btnMin:       0xffbd2e,
-  btnMax:       0x27c93f,
-  alpha:        0.90,
+  bg:          0x0d1117,
+  title:       0x161b22,
+  border:      0x30363d,
+  dragBar:     0x1e2430,
+  dragBarHov:  0x2a3441,
+  accent:      0x6366f1,
+  btnClose:    0xff5f56,
+  btnMin:      0xffbd2e,
+  btnMax:      0x27c93f,
+  alpha:       0.90,
 }
 
-// ─── Кнопка ───────────────────────────────────────────────────────────────────
 export interface WinButton {
-  label: string
-  icon?: string
-  color?: number
+  label:   string
+  color?:  number
   onClick?: () => void
 }
 
@@ -39,87 +38,89 @@ export interface WinContent {
 }
 
 export interface WinOptions {
-  title:    string
-  icon?:    string
-  width?:   number
-  height?:  number
+  title:     string
+  icon?:     string
+  width?:    number
+  height?:   number
   position?: THREE.Vector3
-  content?: WinContent
+  content?:  WinContent
 }
 
-// ─── XRWindow ─────────────────────────────────────────────────────────────────
+// ─── XRWindow ──────────────────────────────────────────────────────────────────
+
 export class XRWindow {
   group:    THREE.Group
   private W: number
   private H: number
-  private title:    string
-  private content:  WinContent
-  private dragBar!: THREE.Mesh
-  private dragGlow!: THREE.Mesh
+  private D = 0.018
+
   private bodyMesh!: THREE.Mesh
-  private border!:  THREE.LineSegments
+  private dragBar!:  THREE.Mesh
+  private dragGlow!: THREE.Mesh
+  private border!:   THREE.LineSegments
   private buttons3d: { mesh: THREE.Mesh; btn: WinButton }[] = []
-  private floatOff: number
+  private floatOff:  number
   private _dragging = false
 
   constructor(opts: WinOptions) {
     this.W = opts.width  ?? 1.6
     this.H = opts.height ?? 1.1
-    this.title   = opts.title
-    this.content = opts.content ?? { buttons: [] }
     this.floatOff = Math.random() * Math.PI * 2
     this.group = new THREE.Group()
     this.group.position.copy(opts.position ?? new THREE.Vector3(0, 0, -2.5))
-    this.build()
+    this.build(opts.title, opts.content ?? { buttons: [] })
   }
 
-  private build(): void {
-    const W = this.W, H = this.H, D = 0.018
+  private build(title: string, content: WinContent): void {
+    const { W, H, D } = this
 
-    // ── Тело окна ────────────────────────────────────────────────────────────
+    // Тело окна — depthWrite: true чтобы руки правильно перекрывались
     this.bodyMesh = new THREE.Mesh(
       new THREE.BoxGeometry(W, H, D),
       new THREE.MeshPhysicalMaterial({
-        color: C.bg, transparent: true, opacity: C.alpha, roughness: 0.12
+        color: C.bg, transparent: true, opacity: C.alpha,
+        depthWrite: true, roughness: 0.12,
       })
     )
     this.group.add(this.bodyMesh)
 
-    // ── Тайтлбар ─────────────────────────────────────────────────────────────
+    // Тайтлбар
     const titleBar = new THREE.Mesh(
       new THREE.BoxGeometry(W, TITLE_BAR_H, D + 0.002),
-      new THREE.MeshPhysicalMaterial({ color: C.title, transparent: true, opacity: 0.97 })
+      new THREE.MeshPhysicalMaterial({
+        color: C.title, transparent: true, opacity: 0.97, depthWrite: true,
+      })
     )
     titleBar.position.set(0, H/2 - TITLE_BAR_H/2, 0.001)
     this.group.add(titleBar)
 
     // Accent линия
-    const line = new THREE.Mesh(
+    const accent = new THREE.Mesh(
       new THREE.BoxGeometry(W, 0.003, D + 0.004),
       new THREE.MeshBasicMaterial({ color: C.accent })
     )
-    line.position.set(0, H/2 - TITLE_BAR_H, 0.002)
-    this.group.add(line)
+    accent.position.set(0, H/2 - TITLE_BAR_H, 0.002)
+    this.group.add(accent)
 
     // Traffic lights
-    ;[
+    for (const { color, x } of [
       { color: C.btnClose, x: -W/2 + 0.07 },
       { color: C.btnMin,   x: -W/2 + 0.15 },
       { color: C.btnMax,   x: -W/2 + 0.23 },
-    ].forEach(({ color, x }) => {
+    ]) {
       const dot = new THREE.Mesh(
         new THREE.CircleGeometry(0.021, 16),
         new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
       )
       dot.position.set(x, H/2 - TITLE_BAR_H/2, D/2 + 0.005)
       this.group.add(dot)
-    })
+    }
 
-    // ── Drag bar (снизу) ──────────────────────────────────────────────────────
+    // Drag bar
     this.dragBar = new THREE.Mesh(
       new THREE.BoxGeometry(W, DRAG_BAR_H, D + 0.004),
       new THREE.MeshPhysicalMaterial({
-        color: C.dragBar, transparent: true, opacity: 0.92, roughness: 0.3
+        color: C.dragBar, transparent: true, opacity: 0.92, depthWrite: true, roughness: 0.3,
       })
     )
     this.dragBar.position.set(0, -H/2 + DRAG_BAR_H/2, 0.001)
@@ -135,19 +136,7 @@ export class XRWindow {
       this.group.add(g)
     }
 
-    // Иконка «⠿» — вертикальные точки
-    for (let row = -1; row <= 1; row++) {
-      for (let col = -1; col <= 1; col++) {
-        const dot = new THREE.Mesh(
-          new THREE.CircleGeometry(0.007, 6),
-          new THREE.MeshBasicMaterial({ color: C.accent, transparent: true, opacity: 0.55 })
-        )
-        dot.position.set(col * 0.022, -H/2 + DRAG_BAR_H/2 + row * 0.022, D/2 + 0.005)
-        this.group.add(dot)
-      }
-    }
-
-    // Glow подсветка drag bar (изначально прозрачная)
+    // Glow drag bar
     this.dragGlow = new THREE.Mesh(
       new THREE.BoxGeometry(W, DRAG_BAR_H + 0.01, D + 0.008),
       new THREE.MeshBasicMaterial({ color: C.accent, transparent: true, opacity: 0 })
@@ -155,21 +144,19 @@ export class XRWindow {
     this.dragGlow.position.set(0, -H/2 + DRAG_BAR_H/2, 0.002)
     this.group.add(this.dragGlow)
 
-    // ── Рамка ────────────────────────────────────────────────────────────────
+    // Рамка
     this.border = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(W + 0.005, H + 0.005, D + 0.002)),
       new THREE.LineBasicMaterial({ color: C.border, transparent: true, opacity: 0.65 })
     )
     this.group.add(this.border)
 
-    // ── Кнопки контента ──────────────────────────────────────────────────────
-    this.buttons3d = []
-    const btns = this.content.buttons
+    // Кнопки контента
+    const btns = content.buttons
+    const cols = btns.length <= 1 ? 1 : 2
     const contentTop = H/2 - TITLE_BAR_H - 0.10
     const contentBot = -H/2 + DRAG_BAR_H + 0.06
-    const contentH = contentTop - contentBot
-
-    const cols = btns.length <= 1 ? 1 : 2
+    const contentH   = contentTop - contentBot
     const rows = Math.ceil(btns.length / cols)
     const btnW = cols === 1 ? W * 0.74 : W * 0.43
     const btnH = Math.min(0.175, contentH / rows - 0.055)
@@ -184,32 +171,30 @@ export class XRWindow {
         new THREE.BoxGeometry(btnW, btnH, 0.022),
         new THREE.MeshPhysicalMaterial({
           color: btn.color ?? C.accent,
-          transparent: true, opacity: 0.88, roughness: 0.15,
-          emissive: btn.color ?? C.accent, emissiveIntensity: 0.06
+          transparent: true, opacity: 0.88,
+          depthWrite: true,
+          roughness: 0.15,
+          emissive: btn.color ?? C.accent, emissiveIntensity: 0.06,
         })
       )
-      mesh.position.set(x, y, D / 2 + 0.013)
+      mesh.position.set(x, y, D/2 + 0.013)
       mesh.userData = { btn }
       this.group.add(mesh)
       this.buttons3d.push({ mesh, btn })
     })
   }
 
-  // ─── Hit-test через bounding box в мировом пространстве ───────────────────
-
-  /** Проверить попадание точки в drag bar */
   hitDragBar(worldPt: THREE.Vector3): boolean {
     this.group.updateWorldMatrix(true, false)
     const local = this.group.worldToLocal(worldPt.clone())
     return (
-      Math.abs(local.x) < this.W / 2 + 0.05 &&
-      local.y > -this.H / 2 - 0.04 &&
-      local.y < -this.H / 2 + DRAG_BAR_H + 0.04 &&
+      Math.abs(local.x) < this.W/2 + 0.05 &&
+      local.y > -this.H/2 - 0.04 &&
+      local.y < -this.H/2 + DRAG_BAR_H + 0.04 &&
       Math.abs(local.z) < 0.15
     )
   }
 
-  /** Проверить попадание в кнопку контента */
   hitButton(worldPt: THREE.Vector3): WinButton | null {
     this.group.updateWorldMatrix(true, false)
     for (const { mesh, btn } of this.buttons3d) {
@@ -225,8 +210,21 @@ export class XRWindow {
     return null
   }
 
+  /** Получить Z плоскости окна в мировых координатах */
+  getWorldZ(): number {
+    const wp = new THREE.Vector3()
+    this.group.getWorldPosition(wp)
+    return wp.z
+  }
+
+  /** Палец находится ПЕРЕД окном (ближе к камере) */
+  isFingerInFront(fingerWorld: THREE.Vector3): boolean {
+    // Больший Z = ближе к камере (камера смотрит в -Z)
+    return fingerWorld.z > this.getWorldZ()
+  }
+
   setDragHighlight(on: boolean): void {
-    ;(this.dragGlow.material  as THREE.MeshBasicMaterial).opacity = on ? 0.12 : 0
+    ;(this.dragGlow.material  as THREE.MeshBasicMaterial).opacity   = on ? 0.12 : 0
     ;(this.dragBar.material   as THREE.MeshPhysicalMaterial).color.setHex(on ? C.dragBarHov : C.dragBar)
   }
 
@@ -255,51 +253,42 @@ export class XRWindow {
     m.opacity = v ? 1.0 : 0.65
   }
 
-  /** Получить Z плоскость окна в мировых координатах */
-  getWorldZ(): number {
-    const wp = new THREE.Vector3()
-    this.group.getWorldPosition(wp)
-    return wp.z
-  }
-
   update(t: number): void {
     if (this._dragging) return
-    this.bodyMesh.position.y = Math.sin(t * 0.55 + this.floatOff) * 0.007
+    // Лёгкое парение
+    this.bodyMesh.position.y = Math.sin(t * 0.55 + this.floatOff) * 0.006
   }
 
   addTo(scene: THREE.Scene):    void { scene.add(this.group) }
   removeFrom(scene: THREE.Scene):void { scene.remove(this.group) }
 }
 
-// ─── WindowManager ────────────────────────────────────────────────────────────
+// ─── WindowManager ─────────────────────────────────────────────────────────────
 
 interface DragState {
   win:       XRWindow
   handIdx:   number
-  winPlaneZ: number            // Z плоскость окна при начале drag
-  // смещение центра окна от точки пересечения в world XY
+  winPlaneZ: number
   offsetX:   number
   offsetY:   number
 }
 
 export class WindowManager {
-  private wins:   XRWindow[] = []
-  private scene:  THREE.Scene
+  private wins:  XRWindow[] = []
+  private scene: THREE.Scene
   private camera: THREE.PerspectiveCamera
-  // В стерео: используем camL для рейкаста — соответствует виду левого глаза
   private stereoCamera: THREE.PerspectiveCamera | null = null
-  private drag:   DragState | null = null
+  private drag:  DragState | null = null
   private cooldown = 0
 
-  private raycaster  = new THREE.Raycaster()
-  private dragPlane  = new THREE.Plane()
+  private raycaster = new THREE.Raycaster()
+  private dragPlane = new THREE.Plane()
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
     this.scene  = scene
     this.camera = camera
   }
 
-  /** null = обычный режим, иначе используется для рейкаста вместо main camera */
   setStereoCamera(cam: THREE.PerspectiveCamera | null): void {
     this.stereoCamera = cam
   }
@@ -310,17 +299,19 @@ export class WindowManager {
   private ndcToPlane(ndcX: number, ndcY: number, planeZ: number): THREE.Vector3 | null {
     const cam = this.stereoCamera ?? this.camera
     this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam)
-    // Плоскость Z = const (перпендикулярна оси Z мира)
     this.dragPlane.set(new THREE.Vector3(0, 0, 1), -planeZ)
     const target = new THREE.Vector3()
-    const hit = this.raycaster.ray.intersectPlane(this.dragPlane, target)
-    return hit ? target : null
+    return this.raycaster.ray.intersectPlane(this.dragPlane, target) ? target : null
+  }
+
+  /** Мировая позиция пальца по NDC */
+  private fingerWorldPos(ndcX: number, ndcY: number, planeZ: number): THREE.Vector3 | null {
+    return this.ndcToPlane(ndcX, ndcY, planeZ)
   }
 
   update(
     time: number,
     gestures: (GestureResult | null)[],
-    /** Нормализованные координаты кончика указательного пальца (0..1) */
     fingerNDC: ({ ndcX: number; ndcY: number } | null)[]
   ): void {
     this.cooldown = Math.max(0, this.cooldown - 1)
@@ -333,32 +324,27 @@ export class WindowManager {
 
       const isPinching = g && g.type === 'pinch' && g.pinchStrength > 0.72
 
-      // ── Начало drag ────────────────────────────────────────────────────────
+      // Начало drag
       if (!this.drag && isPinching && this.cooldown === 0) {
-        // Проверяем drag bar каждого окна (в обратном порядке — верхние первые)
         for (const win of [...this.wins].reverse()) {
           const planeZ  = win.getWorldZ()
           const worldPt = this.ndcToPlane(ndc.ndcX, ndc.ndcY, planeZ)
           if (!worldPt) continue
-
           if (win.hitDragBar(worldPt)) {
             const winPos = new THREE.Vector3()
             win.group.getWorldPosition(winPos)
             this.drag = {
-              win,
-              handIdx:   hi,
-              winPlaneZ: planeZ,
-              offsetX:   winPos.x - worldPt.x,
-              offsetY:   winPos.y - worldPt.y,
+              win, handIdx: hi, winPlaneZ: planeZ,
+              offsetX: winPos.x - worldPt.x,
+              offsetY: winPos.y - worldPt.y,
             }
             win.dragging = true
-            win.setDragHighlight(false)
             break
           }
         }
       }
 
-      // ── Продолжение drag ──────────────────────────────────────────────────
+      // Продолжение drag
       if (this.drag && this.drag.handIdx === hi) {
         if (g && g.pinchStrength > 0.38) {
           const pt = this.ndcToPlane(ndc.ndcX, ndc.ndcY, this.drag.winPlaneZ)
@@ -371,7 +357,6 @@ export class WindowManager {
             this.drag.win.group.position.lerp(target, 0.3)
           }
         } else {
-          // Отпустили
           this.drag.win.dragging = false
           this.drag = null
           this.cooldown = 18
@@ -379,10 +364,9 @@ export class WindowManager {
       }
     }
 
-    // ── Hover и нажатия ────────────────────────────────────────────────────
+    // Hover и нажатия
     for (const win of this.wins) {
       if (win.dragging) continue
-
       let dragHov = false
       let hovBtn: WinButton | null = null
 
@@ -392,7 +376,7 @@ export class WindowManager {
         if (!ndc) continue
 
         const planeZ  = win.getWorldZ()
-        const worldPt = this.ndcToPlane(ndc.ndcX, ndc.ndcY, planeZ)
+        const worldPt = this.fingerWorldPos(ndc.ndcX, ndc.ndcY, planeZ)
         if (!worldPt) continue
 
         if (win.hitDragBar(worldPt)) dragHov = true
@@ -400,7 +384,9 @@ export class WindowManager {
         const btn = win.hitButton(worldPt)
         if (btn) {
           hovBtn = btn
-          if (g && g.pinchStrength > 0.82 && this.cooldown === 0) {
+          // Кнопка срабатывает только если палец ПЕРЕД окном (ближе к камере)
+          const fingerInFront = win.isFingerInFront(worldPt)
+          if (fingerInFront && g && g.pinchStrength > 0.82 && this.cooldown === 0) {
             win.pressButton(btn)
             this.cooldown = 22
           }

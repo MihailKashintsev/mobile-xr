@@ -29,6 +29,10 @@ function setProgress(p: number, msg?: string): void {
 }
 
 async function main(): Promise<void> {
+  // Версия внизу
+  const versionBadge = document.getElementById('version-badge')
+  if (versionBadge) versionBadge.textContent = `Mobile XR v${APP_VERSION}`
+
   setProgress(10, 'Инициализация 3D сцены...')
   const appEl = document.getElementById('app')!
   const scene = new SceneManager(appEl)

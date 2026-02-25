@@ -106,6 +106,7 @@ export class HandCursor {
           emissiveIntensity: 0.3,
           transparent: true,
           opacity: 0.85,
+          depthWrite: true,
           roughness: 0.2,
         })
       )
