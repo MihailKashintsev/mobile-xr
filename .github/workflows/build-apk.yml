@@ -19,114 +19,69 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install Android SDK cmdline-tools
-        run: |
-          sudo apt-get install -y wget unzip
-          mkdir -p $HOME/android-sdk/cmdline-tools
-          cd $HOME/android-sdk/cmdline-tools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
-          unzip -q tools.zip && mv cmdline-tools latest && rm tools.zip
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Accept licenses & install SDK
+      - name: Install SDK components
         run: |
-          yes | sdkmanager --licenses 2>/dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" --sdk_root=$ANDROID_SDK_ROOT
 
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli@latest
 
+      - name: Pre-configure Bubblewrap (skip JDK/SDK prompts)
+        run: |
+          mkdir -p ~/.bubblewrap
+          # Указываем пути к JDK и SDK чтобы bubblewrap не спрашивал
+          cat > ~/.bubblewrap/config.json << JSON
+          {
+            "jdkPath": "$JAVA_HOME",
+            "androidSdkPath": "$ANDROID_SDK_ROOT"
+          }
+          JSON
+
       - name: Generate debug keystore
         run: |
           keytool -genkeypair -v \
-            -keystore keystore.jks \
+            -keystore $GITHUB_WORKSPACE/keystore.jks \
             -alias mobile-xr \
             -keyalg RSA -keysize 2048 \
             -validity 10000 \
             -storepass android \
             -keypass android \
-            -dname "CN=Mobile XR, OU=Dev, O=MihailKashintsev, L=Unknown, S=Unknown, C=US"
+            -dname "CN=Mobile XR,O=MihailKashintsev,C=US"
 
-      - name: Create twa-manifest.json
-        run: |
-          cat > twa-manifest.json << 'JSON'
-          {
-            "packageId": "io.github.mihailkashintsev.mobilexr",
-            "host": "mihailkashintsev.github.io",
-            "name": "Mobile XR",
-            "launcherName": "Mobile XR",
-            "display": "fullscreen",
-            "orientation": "landscape",
-            "themeColor": "#0a0a1a",
-            "backgroundColor": "#0a0a1a",
-            "enableNotifications": false,
-            "startUrl": "/mobile-xr/",
-            "iconUrl": "https://mihailkashintsev.github.io/mobile-xr/icons/icon-512.png",
-            "maskableIconUrl": "https://mihailkashintsev.github.io/mobile-xr/icons/icon-512.png",
-            "shortcuts": [],
-            "generatorApp": "bubblewrap-cli",
-            "webManifestUrl": "https://mihailkashintsev.github.io/mobile-xr/manifest.webmanifest",
-            "isChromeOSOnly": false,
-            "isMetaQuest": false,
-            "minSdkVersion": 21,
-            "signingKey": {
-              "path": "../keystore.jks",
-              "alias": "mobile-xr"
-            },
-            "appVersionCode": 1,
-            "appVersion": "1.0.0",
-            "features": {},
-            "alphaDependencies": { "enabled": false },
-            "enableSiteSettingsShortcut": false,
-            "isSplashScreenEnabled": true,
-            "splashScreenFadeOutDuration": 300,
-            "splashScreenTheme": "SplashScreenTheme",
-            "darkLauncherIconUrl": "",
-            "navigationColor": "#0a0a1a",
-            "navigationColorDark": "#0a0a1a",
-            "navigationDividerColor": "#0a0a1a",
-            "navigationDividerColorDark": "#0a0a1a",
-            "serviceAccountJsonFile": ""
-          }
-          JSON
-
-      - name: Initialize Bubblewrap project
+      - name: Initialize TWA project
         run: |
           mkdir apk-build && cd apk-build
-          bubblewrap init \
+          # --skipPwaValidation + echo "n" отвечает на вопрос про JDK
+          echo "n" | bubblewrap init \
             --manifest https://mihailkashintsev.github.io/mobile-xr/manifest.webmanifest \
             --directory . \
-            --skipPwaValidation \
-            --chromeVersion 119 \
-            2>&1 || true
+            --skipPwaValidation
 
       - name: Build APK
         working-directory: apk-build
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
         run: |
-          bubblewrap build \
-            --signingKeyPath ../keystore.jks \
+          echo "n" | bubblewrap build \
+            --signingKeyPath $GITHUB_WORKSPACE/keystore.jks \
             --signingKeyAlias mobile-xr \
             --signingKeyPassword android \
-            --signingKeyStorePassword android \
-            2>&1
+            --signingKeyStorePassword android
 
-      - name: Find & rename APK
+      - name: Find APK
         run: |
-          find apk-build -name "*.apk" | head -5
           APK=$(find apk-build -name "*.apk" | head -1)
+          echo "Found: $APK"
           if [ -n "$APK" ]; then
             cp "$APK" mobile-xr-android.apk
-            echo "APK_PATH=mobile-xr-android.apk" >> $GITHUB_ENV
+          else
+            echo "No APK found" && exit 1
           fi
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: mobile-xr-android
           path: mobile-xr-android.apk
-          if-no-files-found: warn
           retention-days: 30
