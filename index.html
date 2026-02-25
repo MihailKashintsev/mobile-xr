@@ -100,7 +100,7 @@
     <div class="hand-dot" id="right-dot" style="margin-left:4px"></div>Пр
   </div>
   <div class="hud-right">
-    <button class="hud-btn" id="fullscreen-btn">⛶ Полный</button>
+    <button class="hud-btn" id="fullscreen-btn">⛶ Полный экран</button>
     <button class="hud-btn" id="camera-btn">📷 Камера</button>
     <button class="hud-btn" id="stereo-toggle">👓 VR</button>
   </div>
@@ -118,25 +118,100 @@ checkOrientation()
 window.addEventListener('resize', checkOrientation)
 screen.orientation?.addEventListener('change', checkOrientation)
 
-// Fullscreen
+// Fullscreen / Hide UI
 const fsBtn = document.getElementById('fullscreen-btn')
-fsBtn.addEventListener('click', async () => {
+let hudHidden = false
+
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream
+}
+
+function isInStandaloneMode() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true
+}
+
+async function tryFullscreen() {
+  const el = document.documentElement
   try {
-    if (!document.fullscreenElement && !(document as any).webkitFullscreenElement) {
-      const el = document.documentElement
-      if (el.requestFullscreen) await el.requestFullscreen({navigationUI:'hide'})
-      else if ((el as any).webkitRequestFullscreen) await (el as any).webkitRequestFullscreen()
-    } else {
-      if (document.exitFullscreen) await document.exitFullscreen()
-      else if ((document as any).webkitExitFullscreen) await (document as any).webkitExitFullscreen()
+    if (el.requestFullscreen) {
+      await el.requestFullscreen({ navigationUI: 'hide' })
+      return true
+    } else if (el.webkitRequestFullscreen) {
+      await el.webkitRequestFullscreen()
+      return true
     }
-  } catch(e){ console.log('Fullscreen:', e) }
+  } catch(e) {}
+  return false
+}
+
+fsBtn.addEventListener('click', async () => {
+  // Уже в fullscreen — выходим
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    if (document.exitFullscreen) document.exitFullscreen()
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen()
+    return
+  }
+
+  // iOS Safari не поддерживает Fullscreen API — предлагаем добавить на экран «Домой»
+  if (isIOS() && !isInStandaloneMode()) {
+    const toast = document.createElement('div')
+    toast.style.cssText = `
+      position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+      background:rgba(13,17,23,.97);color:#e6edf3;padding:20px 24px;border-radius:16px;
+      font-family:-apple-system,sans-serif;font-size:.88rem;z-index:9999;
+      border:1px solid rgba(99,102,241,.4);backdrop-filter:blur(16px);
+      max-width:85vw;text-align:center;line-height:1.5;
+    `
+    toast.innerHTML = `
+      <div style="font-size:1.5rem;margin-bottom:10px">📲</div>
+      <div style="font-weight:700;margin-bottom:8px">Полный экран на iOS</div>
+      <div style="color:#9ca3af;font-size:.8rem">
+        Нажмите <strong style="color:#6366f1">Поделиться</strong> →
+        <strong style="color:#6366f1">На экран «Домой»</strong><br>
+        и откройте приложение оттуда
+      </div>
+      <button onclick="this.parentElement.remove()" style="
+        margin-top:14px;background:#6366f1;color:#fff;border:none;
+        padding:8px 20px;border-radius:8px;font-size:.85rem;cursor:pointer;
+      ">Понятно</button>
+    `
+    document.body.appendChild(toast)
+    return
+  }
+
+  // Android Chrome + другие — пробуем полный экран
+  const ok = await tryFullscreen()
+  if (!ok) {
+    // Fallback: скрываем HUD для максимального пространства
+    hudHidden = !hudHidden
+    const hud = document.getElementById('hud')
+    hud.style.opacity = hudHidden ? '0' : '1'
+    hud.style.pointerEvents = hudHidden ? 'none' : 'auto'
+    fsBtn.style.opacity = '1'
+    fsBtn.style.pointerEvents = 'auto'
+    if (hudHidden) {
+      // Показываем только кнопку возврата в углу
+      fsBtn.textContent = '⛶ Показать UI'
+      fsBtn.style.position = 'fixed'
+      fsBtn.style.top = '8px'
+      fsBtn.style.right = '8px'
+    } else {
+      fsBtn.textContent = '⛶ Полный экран'
+      fsBtn.style.position = ''
+      fsBtn.style.top = ''
+      fsBtn.style.right = ''
+    }
+  }
 })
+
 document.addEventListener('fullscreenchange', () => {
-  fsBtn.textContent = document.fullscreenElement ? '✕ Выход' : '⛶ Полный'
+  fsBtn.textContent = (document.fullscreenElement || document.webkitFullscreenElement)
+    ? '✕ Выйти' : '⛶ Полный экран'
 })
 document.addEventListener('webkitfullscreenchange', () => {
-  fsBtn.textContent = (document as any).webkitFullscreenElement ? '✕ Выход' : '⛶ Полный'
+  fsBtn.textContent = (document.fullscreenElement || document.webkitFullscreenElement)
+    ? '✕ Выйти' : '⛶ Полный экран'
 })
 </script>
 

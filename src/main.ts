@@ -182,6 +182,9 @@ async function main(): Promise<void> {
   function toggleStereo(): void {
     const on = scene.toggleStereo()
     stereoToggleEl.textContent = on ? '⚙️ Калибровка' : '👓 VR'
+    // В стерео режиме: рейкаст через camL — левый глаз, именно то что видит пользователь
+    const sr = scene.getStereoRenderer()
+    winManager.setStereoCamera(on && sr ? sr.camL : null)
     if (on) { ensureCalibPanel(); try { (screen.orientation as any)?.lock('landscape') } catch {} }
     else    { try { (screen.orientation as any)?.unlock() } catch {} }
   }

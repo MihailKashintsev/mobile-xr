@@ -286,10 +286,11 @@ export class WindowManager {
   private wins:   XRWindow[] = []
   private scene:  THREE.Scene
   private camera: THREE.PerspectiveCamera
+  // В стерео: используем camL для рейкаста — соответствует виду левого глаза
+  private stereoCamera: THREE.PerspectiveCamera | null = null
   private drag:   DragState | null = null
   private cooldown = 0
 
-  // Вспомогательные объекты для raycast
   private raycaster  = new THREE.Raycaster()
   private dragPlane  = new THREE.Plane()
 
@@ -298,15 +299,17 @@ export class WindowManager {
     this.camera = camera
   }
 
+  /** null = обычный режим, иначе используется для рейкаста вместо main camera */
+  setStereoCamera(cam: THREE.PerspectiveCamera | null): void {
+    this.stereoCamera = cam
+  }
+
   add(win: XRWindow):    void { this.wins.push(win); win.addTo(this.scene) }
   remove(win: XRWindow): void { this.wins = this.wins.filter(w => w !== win); win.removeFrom(this.scene) }
 
-  /**
-   * NDC координаты пальца → мировая точка на плоскости Z=planeZ
-   * Надёжнее чем использовать z из MediaPipe ланд-марков
-   */
   private ndcToPlane(ndcX: number, ndcY: number, planeZ: number): THREE.Vector3 | null {
-    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
+    const cam = this.stereoCamera ?? this.camera
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam)
     // Плоскость Z = const (перпендикулярна оси Z мира)
     this.dragPlane.set(new THREE.Vector3(0, 0, 1), -planeZ)
     const target = new THREE.Vector3()
