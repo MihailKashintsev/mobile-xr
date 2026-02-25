@@ -1,4 +1,5 @@
 import { HandTracker } from './xr/HandTracker'
+import type { Landmark } from './xr/HandTracker'
 import { GestureDetector } from './xr/GestureDetector'
 import { SceneManager } from './xr/SceneManager'
 import { XRWindow, WindowManager } from './ui/WindowManager'
@@ -32,11 +33,10 @@ async function main(): Promise<void> {
   const appEl = document.getElementById('app')!
   const scene = new SceneManager(appEl)
 
-  // ─── Менеджер окон ────────────────────────────────────────────────────────
   const winManager = new WindowManager(scene.scene, scene.camera)
 
-  let cameraPicker:  CameraPicker  | null = null
-  let calibPanel:    CalibrationPanel | null = null
+  let cameraPicker: CameraPicker  | null = null
+  let calibPanel:   CalibrationPanel | null = null
 
   const mainWin = new XRWindow({
     title: 'Mobile XR', icon: '🥽',
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   })
   winManager.add(infoWin)
 
-  // ─── Курсоры рук ──────────────────────────────────────────────────────────
+  // Курсоры — полные скелеты рук
   const leftCursor  = new HandCursor(0x06b6d4)
   const rightCursor = new HandCursor(0xa78bfa)
   leftCursor.addToScene(scene.scene)
@@ -74,8 +74,12 @@ async function main(): Promise<void> {
 
   const gesture = new GestureDetector()
   type GR = ReturnType<GestureDetector['detect']>
+
+  // Текущее состояние рук
   let leftG:  GR | null = null
   let rightG: GR | null = null
+  let leftLM:  Landmark[] | null = null
+  let rightLM: Landmark[] | null = null
   let handsReady = false
 
   // ─── Рендер-цикл ──────────────────────────────────────────────────────────
@@ -83,7 +87,7 @@ async function main(): Promise<void> {
     requestAnimationFrame(animate)
     const time = performance.now() * 0.001
 
-    // NDC координаты кончика указательного пальца (-1..1)
+    // NDC кончиков указательных пальцев для WindowManager
     const fingerNDC = [
       leftG  ? { ndcX: (1 - leftG.indexTip.x)  * 2 - 1, ndcY: -(leftG.indexTip.y  * 2 - 1) } : null,
       rightG ? { ndcX: (1 - rightG.indexTip.x) * 2 - 1, ndcY: -(rightG.indexTip.y * 2 - 1) } : null,
@@ -93,16 +97,18 @@ async function main(): Promise<void> {
       winManager.update(time, [leftG, rightG], fingerNDC)
     }
 
-    // Курсоры (world point для визуала)
+    // Полная визуализация рук
     const hideCursors = scene.isStereo()
     ;[
-      { cursor: leftCursor,  g: leftG,  ndc: fingerNDC[0] },
-      { cursor: rightCursor, g: rightG, ndc: fingerNDC[1] },
-    ].forEach(({ cursor, g, ndc }) => {
-      if (!g || !ndc || hideCursors) { cursor.setVisible(false); return }
-      cursor.setVisible(true)
-      const worldPos = landmarkToWorld(g.indexTip, scene.camera)
-      cursor.update(worldPos, g.type, g.pinchStrength, time)
+      { cursor: leftCursor,  lm: leftLM,  g: leftG  },
+      { cursor: rightCursor, lm: rightLM, g: rightG },
+    ].forEach(({ cursor, lm, g }) => {
+      if (!lm || !g || hideCursors) { cursor.setVisible(false); return }
+      cursor.updateFromLandmarks(
+        lm,
+        (lmk) => landmarkToWorld(lmk, scene.camera),
+        g.type, g.pinchStrength, time
+      )
     })
 
     scene.render()
@@ -130,9 +136,14 @@ async function main(): Promise<void> {
 
     tracker.onHands(hands => {
       leftG = null; rightG = null
+      leftLM = null; rightLM = null
       for (const hand of hands) {
         const g = gesture.detect(hand.landmarks)
-        if (hand.handedness === 'Left') leftG = g; else rightG = g
+        if (hand.handedness === 'Left') {
+          leftG = g; leftLM = hand.landmarks
+        } else {
+          rightG = g; rightLM = hand.landmarks
+        }
       }
       leftDot.classList.toggle('active',  !!leftG)
       rightDot.classList.toggle('active', !!rightG)
@@ -171,7 +182,7 @@ async function main(): Promise<void> {
     const on = scene.toggleStereo()
     stereoToggleEl.textContent = on ? '⚙️ Калибровка' : '👓 VR'
     if (on) { ensureCalibPanel(); try { (screen.orientation as any)?.lock('landscape') } catch {} }
-    else     { try { (screen.orientation as any)?.unlock() } catch {} }
+    else    { try { (screen.orientation as any)?.unlock() } catch {} }
   }
 
   // ─── Автообновление ───────────────────────────────────────────────────────
@@ -180,23 +191,26 @@ async function main(): Promise<void> {
     updateBanner.classList.add('show')
     updateBanner.querySelector('span')!.textContent = `🆕 ${rel.tag_name} доступна!`
   })
-  updateBtn.addEventListener('click', () => location.reload())
+  updateBtn.addEventListener('click',  () => location.reload())
   dismissBtn.addEventListener('click', () => updateBanner.classList.remove('show'))
 }
 
 // ─── Утилиты ──────────────────────────────────────────────────────────────────
 
-function landmarkToWorld(lm: { x: number; y: number; z: number }, cam: THREE.PerspectiveCamera): THREE.Vector3 {
+function landmarkToWorld(lm: Landmark, cam: THREE.PerspectiveCamera): THREE.Vector3 {
   const ndcX = (1 - lm.x) * 2 - 1
   const ndcY = -(lm.y * 2 - 1)
-  const depth = Math.max(-1.5, Math.min(-4.5, -2.5 + lm.z * 8))
+  // z из MediaPipe: 0 у ладони, отрицательный вперёд; масштабируем в глубину сцены
+  const depth = Math.max(1.2, Math.min(4.5, 2.5 - lm.z * 6))
   const vec = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam)
-  return cam.position.clone().addScaledVector(vec.sub(cam.position).normalize(), Math.abs(depth))
+  return cam.position.clone().addScaledVector(vec.sub(cam.position).normalize(), depth)
 }
 
 function spawnParticles(scene: THREE.Scene): void {
-  const count = 50, geo = new THREE.BufferGeometry()
-  const pos = new Float32Array(count * 3), col = new Float32Array(count * 3)
+  const count = 50
+  const geo = new THREE.BufferGeometry()
+  const pos = new Float32Array(count * 3)
+  const col = new Float32Array(count * 3)
   for (let i = 0; i < count; i++) {
     pos[i*3]=(Math.random()-.5)*3; pos[i*3+1]=(Math.random()-.5)*3; pos[i*3+2]=-2-Math.random()*2
     col[i*3]=Math.random(); col[i*3+1]=Math.random()*.5; col[i*3+2]=1
@@ -207,7 +221,11 @@ function spawnParticles(scene: THREE.Scene): void {
   const pts = new THREE.Points(geo, mat)
   scene.add(pts)
   let life = 1.0
-  const tick = () => { life -= 0.015; mat.opacity = life; if (life > 0) requestAnimationFrame(tick); else { scene.remove(pts); geo.dispose(); mat.dispose() } }
+  const tick = () => {
+    life -= 0.015; mat.opacity = life
+    if (life > 0) requestAnimationFrame(tick)
+    else { scene.remove(pts); geo.dispose(); mat.dispose() }
+  }
   tick()
 }
 
