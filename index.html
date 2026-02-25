@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Mobile XR" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+  <title>Mobile XR</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    #app { width: 100vw; height: 100vh; position: relative; }
+    canvas { display: block; }
+
+    #loading-screen {
+      position: fixed; inset: 0; background: #0a0a1a;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 1000; transition: opacity 0.5s;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #fff;
+    }
+    #loading-screen.hidden { opacity: 0; pointer-events: none; }
+    .loader-logo { font-size: 3rem; margin-bottom: 16px; }
+    .loader-title { font-size: 1.5rem; font-weight: 700; letter-spacing: 0.1em; }
+    .loader-sub { font-size: 0.85rem; color: #6b7280; margin-top: 8px; }
+    .loader-bar { width: 200px; height: 3px; background: #1f2937; border-radius: 99px; margin-top: 32px; overflow: hidden; }
+    .loader-bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #6366f1, #06b6d4); border-radius: 99px; transition: width 0.3s; }
+
+    #update-banner {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: rgba(99,102,241,0.95); backdrop-filter: blur(12px);
+      color: white; padding: 12px 20px; border-radius: 12px;
+      display: none; align-items: center; gap: 12px;
+      font-family: -apple-system, sans-serif; font-size: 0.85rem;
+      z-index: 9999; box-shadow: 0 8px 32px rgba(99,102,241,0.4);
+      white-space: nowrap;
+    }
+    #update-banner.show { display: flex; }
+    #update-btn { background: white; color: #6366f1; border: none; padding: 6px 14px;
+      border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 0.85rem; }
+    #dismiss-btn { background: transparent; border: none; color: rgba(255,255,255,0.7);
+      cursor: pointer; font-size: 1.1rem; padding: 0 4px; }
+
+    #hud {
+      position: fixed; top: env(safe-area-inset-top, 16px); left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px 20px; z-index: 100; pointer-events: none;
+    }
+    .hud-badge {
+      background: rgba(10,10,26,0.6); backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+      padding: 6px 14px; color: #fff; font-size: 0.75rem;
+      font-family: -apple-system, sans-serif; display: flex; align-items: center; gap: 6px;
+    }
+    .hand-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; }
+    .hand-dot.active { background: #06b6d4; box-shadow: 0 0 8px #06b6d4; }
+    #stereo-toggle {
+      pointer-events: all; cursor: pointer;
+      background: rgba(10,10,26,0.6); backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 20px;
+      padding: 6px 14px; color: #fff; font-size: 0.75rem;
+      font-family: -apple-system, sans-serif; display: flex; align-items: center; gap: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading-screen">
+    <div class="loader-logo">🥽</div>
+    <div class="loader-title">Mobile XR</div>
+    <div class="loader-sub">Инициализация отслеживания рук...</div>
+    <div class="loader-bar"><div class="loader-bar-fill" id="load-progress"></div></div>
+  </div>
+
+  <div id="update-banner">
+    <span>🆕 Доступно обновление!</span>
+    <button id="update-btn">Обновить</button>
+    <button id="dismiss-btn">✕</button>
+  </div>
+
+  <div id="hud">
+    <div class="hud-badge">
+      <div class="hand-dot" id="left-dot"></div> Лев
+      <div class="hand-dot" id="right-dot" style="margin-left:6px"></div> Пр
+    </div>
+    <button id="stereo-toggle">👓 Cardboard</button>
+  </div>
+
+  <div id="app"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

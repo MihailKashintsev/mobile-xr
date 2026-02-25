@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install & Build
+        run: npm ci && npm run build
+
+      - name: Zip dist
+        run: |
+          cd dist
+          zip -r ../mobile-xr-${{ github.ref_name }}.zip .
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mobile-xr-${{ github.ref_name }}.zip
+          generate_release_notes: true
+          body: |
+            ## Mobile XR ${{ github.ref_name }}
+            
+            ### Установка
+            1. Откройте [приложение](https://MihailKashintsev.github.io/mobile-xr) на телефоне
+            2. Добавьте на главный экран (iOS: Safari → Поделиться → На экран "Домой")
+            
+            ### Изменения

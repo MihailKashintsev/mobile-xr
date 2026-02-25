@@ -1,0 +1,59 @@
+name: Build iOS IPA
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Build profile'
+        default: 'preview'
+        type: choice
+        options: [preview, production]
+
+jobs:
+  build-ios:
+    name: Build iOS via EAS
+    runs-on: ubuntu-latest  # No Mac needed - EAS builds in Apple's cloud!
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build IPA via EAS Cloud
+        run: |
+          PROFILE=${{ github.event.inputs.profile || 'preview' }}
+          eas build --platform ios --profile $PROFILE --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Apple credentials managed by EAS (set up via `eas credentials`)
+          
+      - name: Comment build URL on release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: context.ref.replace('refs/tags/', ''),
+              body: '## iOS Build\nDownload from TestFlight or check EAS dashboard for IPA'
+            }).catch(() => {
+              // Release may already exist, that's fine
+            });
