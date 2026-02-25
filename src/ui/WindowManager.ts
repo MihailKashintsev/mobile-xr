@@ -1,452 +1,413 @@
 /**
- * WindowManager — менеджер окон в мировом пространстве
+ * WindowManager — окна в мировом пространстве
  *
- * Окна закреплены в 3D пространстве (не следуют за камерой).
- * Перемещение: ущипнуть полосу снизу окна → тащить.
- * Каждое окно — самостоятельный Three.js объект в scene (не child камеры).
+ * Перемещение: ущипни drag-bar снизу → тащи.
+ * Позиция рассчитывается raycast на Z-плоскость окна (надёжно).
  */
 
 import * as THREE from 'three'
 import type { GestureResult } from '../xr/GestureDetector'
 
 // ─── Константы ────────────────────────────────────────────────────────────────
+const DRAG_BAR_H   = 0.10
+const TITLE_BAR_H  = 0.13
 
-const DRAG_BAR_HEIGHT  = 0.10   // высота полосы захвата
-const TITLE_BAR_HEIGHT = 0.13   // высота заголовка
-const DRAG_THRESHOLD   = 0.04   // минимальное расстояние пальцев для pinch
-
-// Цвета темы
-const THEME = {
-  windowBg:     0x0d1117,
-  titleBar:     0x161b22,
+const C = {
+  bg:           0x0d1117,
+  title:        0x161b22,
   border:       0x30363d,
-  dragBar:      0x1a1f26,
-  dragBarHover: 0x2d333b,
+  dragBar:      0x1e2430,
+  dragBarHov:   0x2a3441,
   accent:       0x6366f1,
-  accentHover:  0x818cf8,
-  text:         0xe6edf3,
-  textMuted:    0x8b949e,
+  accentHov:    0x818cf8,
   btnClose:     0xff5f56,
   btnMin:       0xffbd2e,
   btnMax:       0x27c93f,
-  glassAlpha:   0.88,
+  alpha:        0.90,
 }
 
-// ─── Интерфейсы ──────────────────────────────────────────────────────────────
-
-export interface WindowContent {
-  type: 'buttons' | 'text' | 'grid'
-  buttons?: WindowButton[]
-  text?: string
-}
-
-export interface WindowButton {
+// ─── Кнопка ───────────────────────────────────────────────────────────────────
+export interface WinButton {
   label: string
   icon?: string
   color?: number
   onClick?: () => void
 }
 
-export interface WindowOptions {
-  title: string
-  icon?: string
-  width?: number
-  height?: number
+export interface WinContent {
+  buttons: WinButton[]
+}
+
+export interface WinOptions {
+  title:    string
+  icon?:    string
+  width?:   number
+  height?:  number
   position?: THREE.Vector3
-  content?: WindowContent
-  closable?: boolean
+  content?: WinContent
 }
 
 // ─── XRWindow ─────────────────────────────────────────────────────────────────
-
 export class XRWindow {
-  group: THREE.Group
-  private opts: Required<WindowOptions>
+  group:    THREE.Group
+  private W: number
+  private H: number
+  private title:    string
+  private content:  WinContent
+  private dragBar!: THREE.Mesh
+  private dragGlow!: THREE.Mesh
   private bodyMesh!: THREE.Mesh
-  private titleBarMesh!: THREE.Mesh
-  private dragBarMesh!: THREE.Mesh
-  private borderMesh!: THREE.LineSegments
-  private buttons3d: { mesh: THREE.Mesh; btn: WindowButton }[] = []
-  private dragBarHighlight: THREE.Mesh
-  private floatPhase: number
-  private _isDragging = false
-  private _isMinimized = false
-  private originalHeight: number
+  private border!:  THREE.LineSegments
+  private buttons3d: { mesh: THREE.Mesh; btn: WinButton }[] = []
+  private floatOff: number
+  private _dragging = false
 
-  constructor(opts: WindowOptions) {
-    this.opts = {
-      title: opts.title,
-      icon: opts.icon ?? '🪟',
-      width: opts.width ?? 1.6,
-      height: opts.height ?? 1.1,
-      position: opts.position ?? new THREE.Vector3(0, 0, -2.5),
-      content: opts.content ?? { type: 'buttons', buttons: [] },
-      closable: opts.closable ?? true,
-    }
-    this.originalHeight = this.opts.height
-    this.floatPhase = Math.random() * Math.PI * 2
+  constructor(opts: WinOptions) {
+    this.W = opts.width  ?? 1.6
+    this.H = opts.height ?? 1.1
+    this.title   = opts.title
+    this.content = opts.content ?? { buttons: [] }
+    this.floatOff = Math.random() * Math.PI * 2
     this.group = new THREE.Group()
-    this.group.position.copy(this.opts.position)
-
-    // Placeholder (будет заменён в build)
-    this.dragBarHighlight = new THREE.Mesh()
-
+    this.group.position.copy(opts.position ?? new THREE.Vector3(0, 0, -2.5))
     this.build()
   }
 
-  // ─── Построение геометрии ─────────────────────────────────────────────────
-
   private build(): void {
-    // Очищаем группу
-    while (this.group.children.length) this.group.remove(this.group.children[0])
-    this.buttons3d = []
+    const W = this.W, H = this.H, D = 0.018
 
-    const W = this.opts.width
-    const H = this.opts.height
-    const D = 0.018  // толщина
-
-    // ── Основное тело окна ─────────────────────────────────────────────────
+    // ── Тело окна ────────────────────────────────────────────────────────────
     this.bodyMesh = new THREE.Mesh(
       new THREE.BoxGeometry(W, H, D),
       new THREE.MeshPhysicalMaterial({
-        color: THEME.windowBg,
-        transparent: true,
-        opacity: THEME.glassAlpha,
-        roughness: 0.1,
-        metalness: 0.0,
+        color: C.bg, transparent: true, opacity: C.alpha, roughness: 0.12
       })
     )
     this.group.add(this.bodyMesh)
 
-    // ── Тайтлбар ──────────────────────────────────────────────────────────
-    this.titleBarMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(W, TITLE_BAR_HEIGHT, D + 0.002),
+    // ── Тайтлбар ─────────────────────────────────────────────────────────────
+    const titleBar = new THREE.Mesh(
+      new THREE.BoxGeometry(W, TITLE_BAR_H, D + 0.002),
+      new THREE.MeshPhysicalMaterial({ color: C.title, transparent: true, opacity: 0.97 })
+    )
+    titleBar.position.set(0, H/2 - TITLE_BAR_H/2, 0.001)
+    this.group.add(titleBar)
+
+    // Accent линия
+    const line = new THREE.Mesh(
+      new THREE.BoxGeometry(W, 0.003, D + 0.004),
+      new THREE.MeshBasicMaterial({ color: C.accent })
+    )
+    line.position.set(0, H/2 - TITLE_BAR_H, 0.002)
+    this.group.add(line)
+
+    // Traffic lights
+    ;[
+      { color: C.btnClose, x: -W/2 + 0.07 },
+      { color: C.btnMin,   x: -W/2 + 0.15 },
+      { color: C.btnMax,   x: -W/2 + 0.23 },
+    ].forEach(({ color, x }) => {
+      const dot = new THREE.Mesh(
+        new THREE.CircleGeometry(0.021, 16),
+        new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+      )
+      dot.position.set(x, H/2 - TITLE_BAR_H/2, D/2 + 0.005)
+      this.group.add(dot)
+    })
+
+    // ── Drag bar (снизу) ──────────────────────────────────────────────────────
+    this.dragBar = new THREE.Mesh(
+      new THREE.BoxGeometry(W, DRAG_BAR_H, D + 0.004),
       new THREE.MeshPhysicalMaterial({
-        color: THEME.titleBar,
-        transparent: true,
-        opacity: 0.95,
-        roughness: 0.2,
+        color: C.dragBar, transparent: true, opacity: 0.92, roughness: 0.3
       })
     )
-    this.titleBarMesh.position.set(0, H / 2 - TITLE_BAR_HEIGHT / 2, 0.001)
-    this.group.add(this.titleBarMesh)
+    this.dragBar.position.set(0, -H/2 + DRAG_BAR_H/2, 0.001)
+    this.group.add(this.dragBar)
 
-    // Accent линия под тайтлбаром
-    const accentLine = new THREE.Mesh(
-      new THREE.BoxGeometry(W, 0.003, D + 0.004),
-      new THREE.MeshBasicMaterial({ color: THEME.accent })
-    )
-    accentLine.position.set(0, H / 2 - TITLE_BAR_HEIGHT, 0.002)
-    this.group.add(accentLine)
+    // Grip штрихи
+    for (let i = -3; i <= 3; i++) {
+      const g = new THREE.Mesh(
+        new THREE.BoxGeometry(0.045, 0.007, 0.003),
+        new THREE.MeshBasicMaterial({ color: 0x4b5563, transparent: true, opacity: 0.8 })
+      )
+      g.position.set(i * 0.09, -H/2 + DRAG_BAR_H/2, D/2 + 0.003)
+      this.group.add(g)
+    }
 
-    // ── Traffic-light кнопки (close/min/max) ──────────────────────────────
-    if (this.opts.closable) {
-      const dots = [
-        { color: THEME.btnClose, x: -W / 2 + 0.08 },
-        { color: THEME.btnMin,   x: -W / 2 + 0.16 },
-        { color: THEME.btnMax,   x: -W / 2 + 0.24 },
-      ]
-      for (const d of dots) {
+    // Иконка «⠿» — вертикальные точки
+    for (let row = -1; row <= 1; row++) {
+      for (let col = -1; col <= 1; col++) {
         const dot = new THREE.Mesh(
-          new THREE.CircleGeometry(0.022, 16),
-          new THREE.MeshBasicMaterial({ color: d.color, side: THREE.DoubleSide })
+          new THREE.CircleGeometry(0.007, 6),
+          new THREE.MeshBasicMaterial({ color: C.accent, transparent: true, opacity: 0.55 })
         )
-        dot.position.set(d.x, H / 2 - TITLE_BAR_HEIGHT / 2, D / 2 + 0.005)
+        dot.position.set(col * 0.022, -H/2 + DRAG_BAR_H/2 + row * 0.022, D/2 + 0.005)
         this.group.add(dot)
       }
     }
 
-    // ── Полоса захвата (drag bar) — снизу ──────────────────────────────────
-    this.dragBarMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(W, DRAG_BAR_HEIGHT, D + 0.004),
-      new THREE.MeshPhysicalMaterial({
-        color: THEME.dragBar,
-        transparent: true,
-        opacity: 0.9,
-        roughness: 0.3,
-      })
+    // Glow подсветка drag bar (изначально прозрачная)
+    this.dragGlow = new THREE.Mesh(
+      new THREE.BoxGeometry(W, DRAG_BAR_H + 0.01, D + 0.008),
+      new THREE.MeshBasicMaterial({ color: C.accent, transparent: true, opacity: 0 })
     )
-    this.dragBarMesh.position.set(0, -H / 2 + DRAG_BAR_HEIGHT / 2, 0.001)
-    this.group.add(this.dragBarMesh)
+    this.dragGlow.position.set(0, -H/2 + DRAG_BAR_H/2, 0.002)
+    this.group.add(this.dragGlow)
 
-    // Grip-черточки на полосе
-    for (let i = -2; i <= 2; i++) {
-      const grip = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 0.008, 0.002),
-        new THREE.MeshBasicMaterial({ color: THEME.border, transparent: true, opacity: 0.8 })
-      )
-      grip.position.set(i * 0.1, -H / 2 + DRAG_BAR_HEIGHT / 2, D / 2 + 0.003)
-      this.group.add(grip)
-    }
-
-    // Иконка "хватай" (⠿)
-    // (делаем просто ещё одну горизонталь немного выше)
-    const gripIcon = new THREE.Mesh(
-      new THREE.BoxGeometry(0.35, 0.006, 0.002),
-      new THREE.MeshBasicMaterial({ color: THEME.accentHover, transparent: true, opacity: 0.6 })
+    // ── Рамка ────────────────────────────────────────────────────────────────
+    this.border = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(W + 0.005, H + 0.005, D + 0.002)),
+      new THREE.LineBasicMaterial({ color: C.border, transparent: true, opacity: 0.65 })
     )
-    gripIcon.position.set(0, -H / 2 + DRAG_BAR_HEIGHT / 2 + 0.02, D / 2 + 0.004)
-    this.group.add(gripIcon)
+    this.group.add(this.border)
 
-    // Подсветка drag bar при ховере (изначально невидима)
-    this.dragBarHighlight = new THREE.Mesh(
-      new THREE.BoxGeometry(W, DRAG_BAR_HEIGHT, D + 0.006),
-      new THREE.MeshBasicMaterial({
-        color: THEME.accent,
-        transparent: true,
-        opacity: 0,
-      })
-    )
-    this.dragBarHighlight.position.set(0, -H / 2 + DRAG_BAR_HEIGHT / 2, 0.002)
-    this.group.add(this.dragBarHighlight)
+    // ── Кнопки контента ──────────────────────────────────────────────────────
+    this.buttons3d = []
+    const btns = this.content.buttons
+    const contentTop = H/2 - TITLE_BAR_H - 0.10
+    const contentBot = -H/2 + DRAG_BAR_H + 0.06
+    const contentH = contentTop - contentBot
 
-    // ── Рамка ──────────────────────────────────────────────────────────────
-    const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(W + 0.004, H + 0.004, D + 0.002))
-    this.borderMesh = new THREE.LineSegments(
-      edges,
-      new THREE.LineBasicMaterial({ color: THEME.border, transparent: true, opacity: 0.7 })
-    )
-    this.group.add(this.borderMesh)
-
-    // ── Контент ────────────────────────────────────────────────────────────
-    if (this.opts.content.type === 'buttons' && this.opts.content.buttons) {
-      this.buildButtons(this.opts.content.buttons, W, H)
-    }
-  }
-
-  private buildButtons(btns: WindowButton[], W: number, H: number): void {
-    const contentH = H - TITLE_BAR_HEIGHT - DRAG_BAR_HEIGHT
-    const startY   = H / 2 - TITLE_BAR_HEIGHT - 0.12
-    const cols     = btns.length <= 2 ? btns.length : 2
-    const rows     = Math.ceil(btns.length / cols)
-    const btnW     = cols === 1 ? W * 0.75 : W * 0.42
-    const btnH     = Math.min(0.18, (contentH - 0.1) / rows - 0.05)
+    const cols = btns.length <= 1 ? 1 : 2
+    const rows = Math.ceil(btns.length / cols)
+    const btnW = cols === 1 ? W * 0.74 : W * 0.43
+    const btnH = Math.min(0.175, contentH / rows - 0.055)
 
     btns.forEach((btn, i) => {
       const col = i % cols
       const row = Math.floor(i / cols)
-      const x = cols === 1 ? 0 : (col === 0 ? -W * 0.24 : W * 0.24)
-      const y = startY - row * (btnH + 0.06) - btnH / 2
+      const x = cols === 1 ? 0 : (col === 0 ? -(W * 0.43 / 2 + 0.03) : (W * 0.43 / 2 + 0.03))
+      const y = contentTop - row * (btnH + 0.055) - btnH / 2
 
       const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(btnW, btnH, 0.022),
         new THREE.MeshPhysicalMaterial({
-          color: btn.color ?? THEME.accent,
-          transparent: true,
-          opacity: 0.9,
-          roughness: 0.15,
-          emissive: btn.color ?? THEME.accent,
-          emissiveIntensity: 0.08,
+          color: btn.color ?? C.accent,
+          transparent: true, opacity: 0.88, roughness: 0.15,
+          emissive: btn.color ?? C.accent, emissiveIntensity: 0.06
         })
       )
-      mesh.position.set(x, y, 0.014)
-      mesh.userData = { button: btn, baseColor: btn.color ?? THEME.accent }
+      mesh.position.set(x, y, D / 2 + 0.013)
+      mesh.userData = { btn }
       this.group.add(mesh)
       this.buttons3d.push({ mesh, btn })
     })
   }
 
-  // ─── Публичные методы ─────────────────────────────────────────────────────
-
-  setContent(content: WindowContent): void {
-    this.opts.content = content
-    this.build()
-  }
+  // ─── Hit-test через bounding box в мировом пространстве ───────────────────
 
   /** Проверить попадание точки в drag bar */
-  hitDragBar(worldPoint: THREE.Vector3): boolean {
-    const local = this.dragBarMesh.worldToLocal(worldPoint.clone())
-    const W = this.opts.width
+  hitDragBar(worldPt: THREE.Vector3): boolean {
+    this.group.updateWorldMatrix(true, false)
+    const local = this.group.worldToLocal(worldPt.clone())
     return (
-      Math.abs(local.x) < W / 2 + 0.05 &&
-      Math.abs(local.y) < DRAG_BAR_HEIGHT / 2 + 0.04 &&
-      Math.abs(local.z) < 0.12
+      Math.abs(local.x) < this.W / 2 + 0.05 &&
+      local.y > -this.H / 2 - 0.04 &&
+      local.y < -this.H / 2 + DRAG_BAR_H + 0.04 &&
+      Math.abs(local.z) < 0.15
     )
   }
 
-  /** Проверить попадание в кнопку */
-  hitButton(worldPoint: THREE.Vector3): WindowButton | null {
+  /** Проверить попадание в кнопку контента */
+  hitButton(worldPt: THREE.Vector3): WinButton | null {
+    this.group.updateWorldMatrix(true, false)
     for (const { mesh, btn } of this.buttons3d) {
-      const local = mesh.worldToLocal(worldPoint.clone())
-      const geo = mesh.geometry as THREE.BoxGeometry
-      const p = geo.parameters
+      mesh.updateWorldMatrix(true, false)
+      const local = mesh.worldToLocal(worldPt.clone())
+      const p = (mesh.geometry as THREE.BoxGeometry).parameters
       if (
-        Math.abs(local.x) < p.width / 2 + 0.04 &&
+        Math.abs(local.x) < p.width  / 2 + 0.04 &&
         Math.abs(local.y) < p.height / 2 + 0.04 &&
-        Math.abs(local.z) < 0.1
+        Math.abs(local.z) < 0.12
       ) return btn
     }
     return null
   }
 
-  setDragBarHovered(v: boolean): void {
-    const mat = this.dragBarHighlight.material as THREE.MeshBasicMaterial
-    mat.opacity = v ? 0.15 : 0
-    const barMat = this.dragBarMesh.material as THREE.MeshPhysicalMaterial
-    barMat.color.setHex(v ? THEME.dragBarHover : THEME.dragBar)
+  setDragHighlight(on: boolean): void {
+    ;(this.dragGlow.material  as THREE.MeshBasicMaterial).opacity = on ? 0.12 : 0
+    ;(this.dragBar.material   as THREE.MeshPhysicalMaterial).color.setHex(on ? C.dragBarHov : C.dragBar)
   }
 
-  setButtonHovered(btn: WindowButton | null): void {
+  setButtonHovered(btn: WinButton | null): void {
     for (const { mesh, btn: b } of this.buttons3d) {
-      const mat = mesh.material as THREE.MeshPhysicalMaterial
-      const isHov = b === btn
-      mat.emissiveIntensity = isHov ? 0.35 : 0.08
-      mat.opacity = isHov ? 1.0 : 0.9
+      const m = mesh.material as THREE.MeshPhysicalMaterial
+      m.emissiveIntensity = b === btn ? 0.35 : 0.06
+      m.opacity           = b === btn ? 1.00 : 0.88
     }
   }
 
-  pressButton(btn: WindowButton): void {
+  pressButton(btn: WinButton): void {
     for (const { mesh, btn: b } of this.buttons3d) {
       if (b !== btn) continue
-      const mat = mesh.material as THREE.MeshPhysicalMaterial
-      mat.emissiveIntensity = 1.0
-      mesh.scale.setScalar(0.93)
-      setTimeout(() => {
-        mat.emissiveIntensity = 0.08
-        mesh.scale.setScalar(1.0)
-      }, 180)
+      mesh.scale.setScalar(0.92)
+      setTimeout(() => mesh.scale.setScalar(1), 180)
       btn.onClick?.()
     }
   }
 
-  get isDragging() { return this._isDragging }
-  set isDragging(v: boolean) {
-    this._isDragging = v
-    const borderMat = this.borderMesh.material as THREE.LineBasicMaterial
-    borderMat.color.setHex(v ? THEME.accent : THEME.border)
-    borderMat.opacity = v ? 1.0 : 0.7
+  get dragging() { return this._dragging }
+  set dragging(v: boolean) {
+    this._dragging = v
+    const m = this.border.material as THREE.LineBasicMaterial
+    m.color.setHex(v ? C.accent : C.border)
+    m.opacity = v ? 1.0 : 0.65
   }
 
-  update(time: number): void {
-    if (!this._isDragging) {
-      // Лёгкое парение
-      const floatY = Math.sin(time * 0.6 + this.floatPhase) * 0.008
-      this.bodyMesh.position.y = floatY
-      this.titleBarMesh.position.y = this.opts.height / 2 - TITLE_BAR_HEIGHT / 2 + floatY
-    }
+  /** Получить Z плоскость окна в мировых координатах */
+  getWorldZ(): number {
+    const wp = new THREE.Vector3()
+    this.group.getWorldPosition(wp)
+    return wp.z
   }
 
-  addToScene(scene: THREE.Scene): void { scene.add(this.group) }
-  removeFromScene(scene: THREE.Scene): void { scene.remove(this.group) }
+  update(t: number): void {
+    if (this._dragging) return
+    this.bodyMesh.position.y = Math.sin(t * 0.55 + this.floatOff) * 0.007
+  }
+
+  addTo(scene: THREE.Scene):    void { scene.add(this.group) }
+  removeFrom(scene: THREE.Scene):void { scene.remove(this.group) }
 }
 
 // ─── WindowManager ────────────────────────────────────────────────────────────
 
 interface DragState {
-  window: XRWindow
-  handIndex: number      // 0 = left, 1 = right
-  offset: THREE.Vector3  // смещение от центра окна до точки захвата
-  startWinPos: THREE.Vector3
-  startPinchPos: THREE.Vector3
+  win:       XRWindow
+  handIdx:   number
+  winPlaneZ: number            // Z плоскость окна при начале drag
+  // смещение центра окна от точки пересечения в world XY
+  offsetX:   number
+  offsetY:   number
 }
 
 export class WindowManager {
-  private windows: XRWindow[] = []
-  private scene: THREE.Scene
+  private wins:   XRWindow[] = []
+  private scene:  THREE.Scene
   private camera: THREE.PerspectiveCamera
-  private dragState: DragState | null = null
-  private pinchCooldown = 0   // предотвращаем дублирование нажатий
+  private drag:   DragState | null = null
+  private cooldown = 0
+
+  // Вспомогательные объекты для raycast
+  private raycaster  = new THREE.Raycaster()
+  private dragPlane  = new THREE.Plane()
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
-    this.scene = scene
+    this.scene  = scene
     this.camera = camera
   }
 
-  addWindow(win: XRWindow): void {
-    this.windows.push(win)
-    win.addToScene(this.scene)
-  }
-
-  removeWindow(win: XRWindow): void {
-    this.windows = this.windows.filter(w => w !== win)
-    win.removeFromScene(this.scene)
-  }
+  add(win: XRWindow):    void { this.wins.push(win); win.addTo(this.scene) }
+  remove(win: XRWindow): void { this.wins = this.wins.filter(w => w !== win); win.removeFrom(this.scene) }
 
   /**
-   * Вызывается каждый кадр со всеми данными рук
-   * hands[0] = левая, hands[1] = правая (или undefined)
+   * NDC координаты пальца → мировая точка на плоскости Z=planeZ
+   * Надёжнее чем использовать z из MediaPipe ланд-марков
    */
+  private ndcToPlane(ndcX: number, ndcY: number, planeZ: number): THREE.Vector3 | null {
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera)
+    // Плоскость Z = const (перпендикулярна оси Z мира)
+    this.dragPlane.set(new THREE.Vector3(0, 0, 1), -planeZ)
+    const target = new THREE.Vector3()
+    const hit = this.raycaster.ray.intersectPlane(this.dragPlane, target)
+    return hit ? target : null
+  }
+
   update(
     time: number,
     gestures: (GestureResult | null)[],
-    indexTips: (THREE.Vector3 | null)[]
+    /** Нормализованные координаты кончика указательного пальца (0..1) */
+    fingerNDC: ({ ndcX: number; ndcY: number } | null)[]
   ): void {
-    this.pinchCooldown = Math.max(0, this.pinchCooldown - 1)
-    this.windows.forEach(w => w.update(time))
+    this.cooldown = Math.max(0, this.cooldown - 1)
+    this.wins.forEach(w => w.update(time))
 
-    // ── Обработка drag ──────────────────────────────────────────────────────
     for (let hi = 0; hi < 2; hi++) {
-      const g = gestures[hi]
-      const tip = indexTips[hi]
-      if (!g || !tip) continue
+      const g   = gestures[hi]
+      const ndc = fingerNDC[hi]
+      if (!ndc) continue
 
-      // Начало drag
-      if (!this.dragState && g.type === 'pinch' && g.pinchStrength > 0.75 && this.pinchCooldown === 0) {
-        // Ищем окно с drag bar под пальцем
-        for (const win of [...this.windows].reverse()) {
-          if (win.hitDragBar(tip)) {
-            this.dragState = {
-              window: win,
-              handIndex: hi,
-              offset: tip.clone().sub(win.group.position),
-              startWinPos: win.group.position.clone(),
-              startPinchPos: tip.clone(),
+      const isPinching = g && g.type === 'pinch' && g.pinchStrength > 0.72
+
+      // ── Начало drag ────────────────────────────────────────────────────────
+      if (!this.drag && isPinching && this.cooldown === 0) {
+        // Проверяем drag bar каждого окна (в обратном порядке — верхние первые)
+        for (const win of [...this.wins].reverse()) {
+          const planeZ  = win.getWorldZ()
+          const worldPt = this.ndcToPlane(ndc.ndcX, ndc.ndcY, planeZ)
+          if (!worldPt) continue
+
+          if (win.hitDragBar(worldPt)) {
+            const winPos = new THREE.Vector3()
+            win.group.getWorldPosition(winPos)
+            this.drag = {
+              win,
+              handIdx:   hi,
+              winPlaneZ: planeZ,
+              offsetX:   winPos.x - worldPt.x,
+              offsetY:   winPos.y - worldPt.y,
             }
-            win.isDragging = true
-            win.setDragBarHovered(false)
+            win.dragging = true
+            win.setDragHighlight(false)
             break
           }
         }
       }
 
-      // Продолжение drag
-      if (this.dragState && this.dragState.handIndex === hi) {
-        if (g.type === 'pinch' && g.pinchStrength > 0.4) {
-          // Двигаем окно
-          const newPos = tip.clone().sub(this.dragState.offset)
-          // Ограничиваем Z чтобы не улетело
-          newPos.z = THREE.MathUtils.clamp(newPos.z, -5, -1)
-          this.dragState.window.group.position.lerp(newPos, 0.25)
+      // ── Продолжение drag ──────────────────────────────────────────────────
+      if (this.drag && this.drag.handIdx === hi) {
+        if (g && g.pinchStrength > 0.38) {
+          const pt = this.ndcToPlane(ndc.ndcX, ndc.ndcY, this.drag.winPlaneZ)
+          if (pt) {
+            const target = new THREE.Vector3(
+              pt.x + this.drag.offsetX,
+              pt.y + this.drag.offsetY,
+              this.drag.winPlaneZ
+            )
+            this.drag.win.group.position.lerp(target, 0.3)
+          }
         } else {
           // Отпустили
-          this.dragState.window.isDragging = false
-          this.dragState = null
-          this.pinchCooldown = 15
+          this.drag.win.dragging = false
+          this.drag = null
+          this.cooldown = 18
         }
       }
     }
 
-    // ── Ховер и нажатия ─────────────────────────────────────────────────────
-    for (const win of this.windows) {
-      if (win.isDragging) continue
+    // ── Hover и нажатия ────────────────────────────────────────────────────
+    for (const win of this.wins) {
+      if (win.dragging) continue
 
-      let dragBarHovered = false
-      let hoveredBtn: WindowButton | null = null
+      let dragHov = false
+      let hovBtn: WinButton | null = null
 
       for (let hi = 0; hi < 2; hi++) {
-        const g = gestures[hi]
-        const tip = indexTips[hi]
-        if (!tip) continue
+        const g   = gestures[hi]
+        const ndc = fingerNDC[hi]
+        if (!ndc) continue
 
-        if (win.hitDragBar(tip)) {
-          dragBarHovered = true
-        }
+        const planeZ  = win.getWorldZ()
+        const worldPt = this.ndcToPlane(ndc.ndcX, ndc.ndcY, planeZ)
+        if (!worldPt) continue
 
-        const btn = win.hitButton(tip)
+        if (win.hitDragBar(worldPt)) dragHov = true
+
+        const btn = win.hitButton(worldPt)
         if (btn) {
-          hoveredBtn = btn
-          // Нажатие: pinch + cooldown
-          if (g && g.type === 'pinch' && g.pinchStrength > 0.8 && this.pinchCooldown === 0) {
+          hovBtn = btn
+          if (g && g.pinchStrength > 0.82 && this.cooldown === 0) {
             win.pressButton(btn)
-            this.pinchCooldown = 20
+            this.cooldown = 22
           }
         }
       }
 
-      win.setDragBarHovered(dragBarHovered)
-      win.setButtonHovered(hoveredBtn)
+      win.setDragHighlight(dragHov)
+      win.setButtonHovered(hovBtn)
     }
   }
 
-  getWindows(): XRWindow[] { return this.windows }
+  getWindows(): XRWindow[] { return this.wins }
 }
