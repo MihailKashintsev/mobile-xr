@@ -275,10 +275,9 @@ declare const __APP_VERSION__: string
 
 main().catch(err => {
   console.error('Fatal init error:', err)
-  if (loaderSub) {
-    loaderSub.textContent = `❌ ${err.message}`
-    ;(loaderSub as HTMLElement).style.color = '#f87171'
+  const sub = document.querySelector('.loader-sub') as HTMLElement
+  if (sub) {
+    sub.textContent = `❌ ${err.message}`
+    sub.style.color = '#f87171'
   }
 })
-
-const loaderSub = document.querySelector('.loader-sub') as HTMLElement
