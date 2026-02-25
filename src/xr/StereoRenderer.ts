@@ -1,315 +1,306 @@
 /**
- * StereoRenderer — настоящий VR стерео рендер для очков типа Cardboard
+ * StereoRenderer — VR стерео рендер, исправленный для мобильных
  *
- * Архитектура:
- *  1. Левая и правая камеры рендерятся в отдельные RenderTarget
- *  2. Shader с бочкообразной дисторсией "развёртывает" линзу
- *  3. Оба глаза выводятся side-by-side через scissor/viewport
- *
- * Калибровка хранится в localStorage и применяется мгновенно
+ * Ключевые исправления vs предыдущей версии:
+ *  1. setViewport/setScissor принимают CSS-пиксели (Three.js сам умножает на DPR)
+ *     На iPhone 14 Pro DPR=3 — без этого весь layout в 3 раза смещён
+ *  2. RenderTarget создаётся в физических пикселях (domElement.width)
+ *  3. Два отдельных quadScene (L и R) — без add/remove каждый кадр
+ *  4. autoClear управляется явно на каждом этапе
+ *  5. setRenderTarget(null) + явный сброс viewport после рендера
  */
 
 import * as THREE from 'three'
 
-// ─── Типы ──────────────────────────────────────────────────────────────────────
-
 export interface StereoCalibration {
-  ipd: number            // межзрачковое расстояние, мм (55–75)
-  lensDistance: number   // расстояние линзы, 0..1 (обычно 0.5)
-  k1: number             // коэф. бочки #1 (0..0.5)
-  k2: number             // коэф. бочки #2 (0..0.3)
-  verticalOffset: number // смещение по вертикали (−0.1..0.1)
-  fov: number            // поле зрения в градусах (70..120)
-  zoom: number           // масштаб (0.8..1.2)
+  ipd: number            // межзрачковое расстояние мм (50–80)
+  lensDistance: number   // дистанция линзы 0..1
+  k1: number             // бочка коэф. 1
+  k2: number             // бочка коэф. 2
+  verticalOffset: number // вертикальный сдвиг
+  fov: number            // поле зрения °
+  zoom: number           // масштаб
 }
 
 export const DEFAULT_CALIBRATION: StereoCalibration = {
-  ipd: 63,
-  lensDistance: 0.5,
-  k1: 0.22,
-  k2: 0.1,
-  verticalOffset: 0,
-  fov: 90,
-  zoom: 1.0
+  ipd: 63, lensDistance: 0.5, k1: 0.22, k2: 0.10,
+  verticalOffset: 0, fov: 90, zoom: 1.0
 }
 
 const STORAGE_KEY = 'mobile-xr-stereo-calib'
 
-// ─── Шейдер бочкообразной дисторсии ────────────────────────────────────────────
+// ─── Шейдеры ──────────────────────────────────────────────────────────────────
 
-const DISTORT_VERT = /* glsl */`
-varying vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`
-
-const DISTORT_FRAG = /* glsl */`
-uniform sampler2D tEye;
-uniform float k1;
-uniform float k2;
-uniform float zoom;
-uniform vec2  center;      // обычно (0.5, 0.5)
-
-varying vec2 vUv;
-
-vec2 distort(vec2 uv) {
-  vec2 d = uv - center;
-  float r2 = dot(d, d);
-  float coef = 1.0 + k1 * r2 + k2 * r2 * r2;
-  return center + d * coef * zoom;
-}
-
-void main() {
-  vec2 distorted = distort(vUv);
-  // Чёрный за пределами текстуры
-  if (distorted.x < 0.0 || distorted.x > 1.0 ||
-      distorted.y < 0.0 || distorted.y > 1.0) {
-    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    return;
+const VERT = /* glsl */`
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
   }
-  gl_FragColor = texture2D(tEye, distorted);
-}
 `
 
-// ─── Класс рендерера ───────────────────────────────────────────────────────────
+const FRAG = /* glsl */`
+  precision mediump float;
+  uniform sampler2D tEye;
+  uniform float k1;
+  uniform float k2;
+  uniform float zoom;
+  varying vec2 vUv;
+
+  void main() {
+    vec2 center = vec2(0.5, 0.5);
+    vec2 d  = vUv - center;
+    float r2 = dot(d, d);
+    // Обратная дисторсия: растягиваем UV чтобы компенсировать линзу
+    float barrel = 1.0 + k1 * r2 + k2 * r2 * r2;
+    vec2 src = center + d * barrel * zoom;
+
+    if (src.x < 0.0 || src.x > 1.0 || src.y < 0.0 || src.y > 1.0) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    } else {
+      gl_FragColor = texture2D(tEye, src);
+    }
+  }
+`
+
+// ─── StereoRenderer ───────────────────────────────────────────────────────────
 
 export class StereoRenderer {
-  private renderer: THREE.WebGLRenderer
-  private calib: StereoCalibration
+  private renderer:  THREE.WebGLRenderer
+  calib:             StereoCalibration
 
-  // Левая и правая камеры
   private camL: THREE.PerspectiveCamera
   private camR: THREE.PerspectiveCamera
 
-  // Render targets для каждого глаза
   private rtL!: THREE.WebGLRenderTarget
   private rtR!: THREE.WebGLRenderTarget
 
-  // Fullscreen quad для вывода с дисторсией
-  private quadScene: THREE.Scene
-  private quadCamera: THREE.OrthographicCamera
-  private quadMeshL!: THREE.Mesh
-  private quadMeshR!: THREE.Mesh
+  // Отдельные сцены для каждого глаза — без add/remove каждый кадр
+  private quadSceneL = new THREE.Scene()
+  private quadSceneR = new THREE.Scene()
+  private quadCam    = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+  private matL!: THREE.ShaderMaterial
+  private matR!: THREE.ShaderMaterial
 
-  // Фон (AR видео)
-  private bgSceneL: THREE.Scene
-  private bgSceneR: THREE.Scene
-  private bgCamL: THREE.OrthographicCamera
-  private bgCamR: THREE.OrthographicCamera
-  private bgMatL?: THREE.MeshBasicMaterial
-  private bgMatR?: THREE.MeshBasicMaterial
+  // AR фон
+  private bgSceneL = new THREE.Scene()
+  private bgSceneR = new THREE.Scene()
+  private bgCam    = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
 
-  constructor(renderer: THREE.WebGLRenderer, calib?: Partial<StereoCalibration>) {
+  constructor(renderer: THREE.WebGLRenderer, override?: Partial<StereoCalibration>) {
     this.renderer = renderer
-    this.calib = { ...DEFAULT_CALIBRATION, ...this.loadFromStorage(), ...calib }
-
-    // Основные камеры с временным aspect (будет обновлён)
-    this.camL = new THREE.PerspectiveCamera(this.calib.fov, 1, 0.01, 100)
-    this.camR = new THREE.PerspectiveCamera(this.calib.fov, 1, 0.01, 100)
-
-    // Quad сцена для пост-обработки
-    this.quadScene = new THREE.Scene()
-    this.quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-
-    // Фоновые сцены (AR видео дублируется в каждый глаз)
-    this.bgSceneL = new THREE.Scene()
-    this.bgSceneR = new THREE.Scene()
-    this.bgCamL = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-    this.bgCamR = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
-
-    this.buildTargets()
-    this.buildQuads()
+    this.calib    = { ...DEFAULT_CALIBRATION, ...this.load(), ...override }
+    this.camL     = new THREE.PerspectiveCamera(this.calib.fov, 1, 0.01, 100)
+    this.camR     = new THREE.PerspectiveCamera(this.calib.fov, 1, 0.01, 100)
+    this.rebuild()
   }
 
-  // ─── Публичные методы ─────────────────────────────────────────────────────────
+  // ─── Публичные ────────────────────────────────────────────────────────────
 
-  /** Обновить калибровку (частично или полностью) */
   setCalibration(patch: Partial<StereoCalibration>): void {
     this.calib = { ...this.calib, ...patch }
-    this.applyCalibration()
-    this.saveToStorage()
+    this.applyCalib()
+    this.save()
   }
 
-  getCalibration(): StereoCalibration {
-    return { ...this.calib }
-  }
+  getCalibration(): StereoCalibration { return { ...this.calib } }
 
   resetCalibration(): void {
     this.calib = { ...DEFAULT_CALIBRATION }
-    this.applyCalibration()
-    this.saveToStorage()
+    this.applyCalib()
+    this.save()
   }
 
-  /** Подключить видео-текстуру как AR фон */
-  setupARBackground(videoTexture: THREE.VideoTexture): void {
-    const makeQuad = (mat: THREE.MeshBasicMaterial) => {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat)
-      m.renderOrder = -1
-      return m
+  setupARBackground(vt: THREE.VideoTexture): void {
+    // Очищаем старые меши фона
+    this.bgSceneL.clear()
+    this.bgSceneR.clear()
+
+    const makeQuad = () => new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ map: vt, depthTest: false, depthWrite: false })
+    )
+    this.bgSceneL.add(makeQuad())
+    this.bgSceneR.add(makeQuad())
+  }
+
+  render(scene: THREE.Scene, main: THREE.PerspectiveCamera): void {
+    this.syncCameras(main)
+
+    // ── CSS размеры (для viewport/scissor) ───────────────────────────────────
+    // Three.js setViewport/setScissor принимают CSS px и сами умножают на DPR
+    const css = new THREE.Vector2()
+    this.renderer.getSize(css)
+    const CW = css.x   // CSS ширина всего канваса
+    const CH = css.y   // CSS высота
+    const HW = CW / 2  // половина
+
+    // ── Физические размеры для RT ─────────────────────────────────────────────
+    // RT должен быть в физических пикселях
+    const PW = this.renderer.domElement.width   // физическая ширина
+    const PH = this.renderer.domElement.height  // физическая высота
+    const PHW = Math.floor(PW / 2)              // половина физической ширины
+
+    // Пересоздаём RT если размер изменился
+    if (this.rtL.width !== PHW || this.rtL.height !== PH) {
+      this.rtL.dispose(); this.rtR.dispose()
+      this.rtL = this.makeRT(PHW, PH)
+      this.rtR = this.makeRT(PHW, PH)
+      this.matL.uniforms.tEye.value = this.rtL.texture
+      this.matR.uniforms.tEye.value = this.rtR.texture
+      this.updateAspect(PHW, PH)
     }
 
-    this.bgMatL = new THREE.MeshBasicMaterial({ map: videoTexture, depthTest: false, depthWrite: false })
-    this.bgMatR = new THREE.MeshBasicMaterial({ map: videoTexture, depthTest: false, depthWrite: false })
-
-    this.bgSceneL.add(makeQuad(this.bgMatL))
-    this.bgSceneR.add(makeQuad(this.bgMatR))
-  }
-
-  /** Обновить позицию камер из главной камеры сцены */
-  syncFromCamera(main: THREE.PerspectiveCamera): void {
-    const ipdWorld = (this.calib.ipd / 1000) * 0.5   // IPD в метрах, половина
-    const vOff = this.calib.verticalOffset
-
-    // Копируем матрицу мира
-    this.camL.copy(main)
-    this.camR.copy(main)
-    this.camL.fov = this.calib.fov
-    this.camR.fov = this.calib.fov
-
-    // Сдвиг по X (горизонталь) ± половина IPD
-    const shiftL = new THREE.Vector3(-ipdWorld, vOff, 0).applyQuaternion(main.quaternion)
-    const shiftR = new THREE.Vector3( ipdWorld, vOff, 0).applyQuaternion(main.quaternion)
-    this.camL.position.copy(main.position).add(shiftL)
-    this.camR.position.copy(main.position).add(shiftR)
-
-    this.camL.updateProjectionMatrix()
-    this.camR.updateProjectionMatrix()
-  }
-
-  /** Главный вызов рендера — вместо обычного renderer.render() */
-  render(scene: THREE.Scene, mainCamera: THREE.PerspectiveCamera): void {
-    this.syncFromCamera(mainCamera)
-
-    const W = this.renderer.domElement.width
-    const H = this.renderer.domElement.height
-
-    // ── Рендер левого глаза в RT ─────────────────────────────────────────────
+    // ── Рендер левого глаза → RT ──────────────────────────────────────────────
     this.renderer.setRenderTarget(this.rtL)
-    this.renderer.autoClear = false
+    this.renderer.autoClear = true
     this.renderer.clear()
-    this.renderer.render(this.bgSceneL, this.bgCamL)
+    this.renderer.autoClear = false
+    this.renderer.render(this.bgSceneL, this.bgCam)
     this.renderer.render(scene, this.camL)
-    this.renderer.setRenderTarget(null)
 
-    // ── Рендер правого глаза в RT ────────────────────────────────────────────
+    // ── Рендер правого глаза → RT ─────────────────────────────────────────────
     this.renderer.setRenderTarget(this.rtR)
+    this.renderer.autoClear = true
     this.renderer.clear()
-    this.renderer.render(this.bgSceneR, this.bgCamR)
-    this.renderer.render(scene, this.camR)
-    this.renderer.setRenderTarget(null)
-
-    // ── Вывод side-by-side с дисторсией ─────────────────────────────────────
     this.renderer.autoClear = false
+    this.renderer.render(this.bgSceneR, this.bgCam)
+    this.renderer.render(scene, this.camR)
+
+    // ── Вывод на экран side-by-side ───────────────────────────────────────────
+    this.renderer.setRenderTarget(null)
+    this.renderer.autoClear = true
     this.renderer.clear()
-
-    // Левый глаз — левая половина экрана
-    this.renderer.setViewport(0, 0, W / 2, H)
-    this.renderer.setScissor(0, 0, W / 2, H)
+    this.renderer.autoClear = false
     this.renderer.setScissorTest(true)
-    this.quadScene.add(this.quadMeshL)
-    this.quadScene.remove(this.quadMeshR)
-    this.renderer.render(this.quadScene, this.quadCamera)
 
-    // Правый глаз — правая половина экрана
-    this.renderer.setViewport(W / 2, 0, W / 2, H)
-    this.renderer.setScissor(W / 2, 0, W / 2, H)
-    this.quadScene.add(this.quadMeshR)
-    this.quadScene.remove(this.quadMeshL)
-    this.renderer.render(this.quadScene, this.quadCamera)
+    // Левый глаз
+    this.renderer.setViewport(0,  0, HW, CH)
+    this.renderer.setScissor( 0,  0, HW, CH)
+    this.renderer.render(this.quadSceneL, this.quadCam)
 
-    // Сброс
+    // Правый глаз
+    this.renderer.setViewport(HW, 0, HW, CH)
+    this.renderer.setScissor( HW, 0, HW, CH)
+    this.renderer.render(this.quadSceneR, this.quadCam)
+
+    // ── Сброс состояния ───────────────────────────────────────────────────────
     this.renderer.setScissorTest(false)
-    this.renderer.setViewport(0, 0, W, H)
+    this.renderer.setViewport(0, 0, CW, CH)
+    this.renderer.autoClear = true
   }
 
-  /** Вызывать при изменении размера окна */
   onResize(): void {
-    this.buildTargets()
-    this.updateCameraAspect()
-  }
-
-  // ─── Приватные методы ─────────────────────────────────────────────────────────
-
-  private buildTargets(): void {
-    const W = this.renderer.domElement.width / 2
-    const H = this.renderer.domElement.height
-
-    this.rtL?.dispose()
-    this.rtR?.dispose()
-
-    const params: THREE.WebGLRenderTargetOptions = {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.SRGBColorSpace
-    }
-    this.rtL = new THREE.WebGLRenderTarget(W, H, params)
-    this.rtR = new THREE.WebGLRenderTarget(W, H, params)
-
-    this.updateCameraAspect()
-    this.buildQuads()   // Пересоздаём квады с новыми текстурами
-  }
-
-  private updateCameraAspect(): void {
-    const aspect = (this.renderer.domElement.width / 2) / this.renderer.domElement.height
-    this.camL.aspect = aspect
-    this.camR.aspect = aspect
-    this.camL.fov = this.calib.fov
-    this.camR.fov = this.calib.fov
-    this.camL.updateProjectionMatrix()
-    this.camR.updateProjectionMatrix()
-  }
-
-  private buildQuads(): void {
-    const makeDistortMesh = (rt: THREE.WebGLRenderTarget) => {
-      const mat = new THREE.ShaderMaterial({
-        vertexShader: DISTORT_VERT,
-        fragmentShader: DISTORT_FRAG,
-        uniforms: {
-          tEye:   { value: rt.texture },
-          k1:     { value: this.calib.k1 },
-          k2:     { value: this.calib.k2 },
-          zoom:   { value: this.calib.zoom },
-          center: { value: new THREE.Vector2(0.5, 0.5) }
-        },
-        depthTest: false,
-        depthWrite: false
-      })
-      return new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat)
-    }
-
-    this.quadMeshL = makeDistortMesh(this.rtL)
-    this.quadMeshR = makeDistortMesh(this.rtR)
-  }
-
-  private applyCalibration(): void {
-    const updateMesh = (mesh: THREE.Mesh, rt: THREE.WebGLRenderTarget) => {
-      const mat = mesh.material as THREE.ShaderMaterial
-      mat.uniforms.k1.value   = this.calib.k1
-      mat.uniforms.k2.value   = this.calib.k2
-      mat.uniforms.zoom.value = this.calib.zoom
-      mat.uniforms.tEye.value = rt.texture
-    }
-    if (this.quadMeshL) updateMesh(this.quadMeshL, this.rtL)
-    if (this.quadMeshR) updateMesh(this.quadMeshR, this.rtR)
-    this.updateCameraAspect()
-  }
-
-  private saveToStorage(): void {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.calib)) } catch {}
-  }
-
-  private loadFromStorage(): Partial<StereoCalibration> {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      return raw ? JSON.parse(raw) : {}
-    } catch { return {} }
+    // Пересоздание RT произойдёт автоматически в следующем render()
+    // Здесь только обновляем аспект
+    const PH = this.renderer.domElement.height
+    const PHW = Math.floor(this.renderer.domElement.width / 2)
+    this.updateAspect(PHW, PH)
   }
 
   dispose(): void {
     this.rtL.dispose()
     this.rtR.dispose()
+  }
+
+  // ─── Приватные ────────────────────────────────────────────────────────────
+
+  private rebuild(): void {
+    const PW = this.renderer.domElement.width
+    const PH = this.renderer.domElement.height
+    const PHW = Math.max(1, Math.floor(PW / 2))
+
+    this.rtL?.dispose()
+    this.rtR?.dispose()
+    this.rtL = this.makeRT(PHW, PH)
+    this.rtR = this.makeRT(PHW, PH)
+
+    this.matL = this.makeDistortMat(this.rtL.texture)
+    this.matR = this.makeDistortMat(this.rtR.texture)
+
+    // Добавляем квады в сцены ОДИН РАЗ
+    this.quadSceneL.clear()
+    this.quadSceneR.clear()
+    this.quadSceneL.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.matL))
+    this.quadSceneR.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.matR))
+
+    this.updateAspect(PHW, PH)
+  }
+
+  private makeRT(w: number, h: number): THREE.WebGLRenderTarget {
+    return new THREE.WebGLRenderTarget(w, h, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format:    THREE.RGBAFormat,
+      colorSpace: THREE.SRGBColorSpace,
+    })
+  }
+
+  private makeDistortMat(tex: THREE.Texture): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      vertexShader:   VERT,
+      fragmentShader: FRAG,
+      uniforms: {
+        tEye:  { value: tex },
+        k1:    { value: this.calib.k1 },
+        k2:    { value: this.calib.k2 },
+        zoom:  { value: this.calib.zoom },
+      },
+      depthTest:  false,
+      depthWrite: false,
+    })
+  }
+
+  private updateAspect(w: number, h: number): void {
+    const aspect = h > 0 ? w / h : 1
+    this.camL.aspect = aspect
+    this.camR.aspect = aspect
+    this.camL.fov    = this.calib.fov
+    this.camR.fov    = this.calib.fov
+    this.camL.updateProjectionMatrix()
+    this.camR.updateProjectionMatrix()
+  }
+
+  private syncCameras(main: THREE.PerspectiveCamera): void {
+    const half = (this.calib.ipd / 1000) / 2
+    const vOff = this.calib.verticalOffset
+
+    this.camL.copy(main)
+    this.camR.copy(main)
+    this.camL.fov = this.calib.fov
+    this.camR.fov = this.calib.fov
+
+    const q = main.quaternion
+    this.camL.position.copy(main.position)
+      .add(new THREE.Vector3(-half, vOff, 0).applyQuaternion(q))
+    this.camR.position.copy(main.position)
+      .add(new THREE.Vector3( half, vOff, 0).applyQuaternion(q))
+
+    this.camL.updateProjectionMatrix()
+    this.camR.updateProjectionMatrix()
+  }
+
+  private applyCalib(): void {
+    if (this.matL) {
+      this.matL.uniforms.k1.value   = this.calib.k1
+      this.matL.uniforms.k2.value   = this.calib.k2
+      this.matL.uniforms.zoom.value = this.calib.zoom
+    }
+    if (this.matR) {
+      this.matR.uniforms.k1.value   = this.calib.k1
+      this.matR.uniforms.k2.value   = this.calib.k2
+      this.matR.uniforms.zoom.value = this.calib.zoom
+    }
+    const PH = this.renderer.domElement.height
+    const PHW = Math.floor(this.renderer.domElement.width / 2)
+    this.updateAspect(PHW, PH)
+  }
+
+  private save(): void {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.calib)) } catch {}
+  }
+
+  private load(): Partial<StereoCalibration> {
+    try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : {} } catch { return {} }
   }
 }
