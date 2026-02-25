@@ -1,9 +1,5 @@
 /**
- * HandTracker — MediaPipe Hands через CDN script-tag (не npm import!)
- *
- * npm-пакет @mediapipe/hands не работает с Vite/bundler —
- * WASM файлы не резолвятся. Единственный рабочий способ в браузере —
- * загрузить hands.js скриптом напрямую с CDN.
+ * HandTracker — MediaPipe Hands через CDN script-tag
  */
 
 export interface Landmark { x: number; y: number; z: number }
@@ -14,6 +10,12 @@ export interface HandData {
 }
 export type HandsCallback = (hands: HandData[]) => void
 
+export interface CameraInfo {
+  deviceId: string
+  label: string
+  facing: 'user' | 'environment' | 'unknown'
+}
+
 const MP_VERSION = '0.4.1675469240'
 const MP_CDN = `https://cdn.jsdelivr.net/npm/@mediapipe/hands@${MP_VERSION}`
 
@@ -22,6 +24,7 @@ export class HandTracker {
   private videoEl: HTMLVideoElement
   private callbacks: HandsCallback[] = []
   private isRunning = false
+  private currentDeviceId: string | null = null
 
   constructor() {
     this.videoEl = document.createElement('video')
@@ -35,16 +38,12 @@ export class HandTracker {
 
   async init(onProgress?: (p: number) => void): Promise<void> {
     onProgress?.(10)
-
-    // 1. Грузим скрипт рук с CDN
     await this.loadScript(`${MP_CDN}/hands.js`)
     onProgress?.(35)
 
-    // 2. Ждём появления window.Hands (скрипт может грузиться асинхронно)
     const HandsClass = await this.waitForGlobal('Hands', 8000)
     onProgress?.(50)
 
-    // 3. Создаём экземпляр
     this.hands = new HandsClass({
       locateFile: (file: string) => `${MP_CDN}/${file}`
     })
@@ -72,8 +71,6 @@ export class HandTracker {
     })
 
     onProgress?.(60)
-
-    // 4. Инициализируем WASM модель
     await Promise.race([
       this.hands.initialize(),
       new Promise<void>((_, rej) =>
@@ -82,22 +79,49 @@ export class HandTracker {
     ])
     onProgress?.(80)
 
-    // 5. Запускаем камеру
     await this.startCamera()
     onProgress?.(100)
   }
 
-  private async startCamera(): Promise<void> {
+  /** Получить список доступных камер */
+  async getCameras(): Promise<CameraInfo[]> {
+    // Нужно сначала запросить разрешение, чтобы получить label
+    if (!navigator.mediaDevices?.enumerateDevices) return []
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    return devices
+      .filter(d => d.kind === 'videoinput')
+      .map(d => ({
+        deviceId: d.deviceId,
+        label: d.label || `Камера ${d.deviceId.slice(0, 6)}...`,
+        facing: d.label.toLowerCase().includes('front') || d.label.toLowerCase().includes('фронт')
+          ? 'user'
+          : d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('rear') || d.label.toLowerCase().includes('зад')
+            ? 'environment'
+            : 'unknown'
+      }))
+  }
+
+  /** Переключить камеру по deviceId */
+  async switchCamera(deviceId: string): Promise<void> {
+    this.stopStream()
+    this.currentDeviceId = deviceId
+    await this.startCamera(deviceId)
+  }
+
+  private async startCamera(deviceId?: string): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('Камера недоступна. Нужен HTTPS и современный браузер.')
     }
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      const constraints: MediaStreamConstraints = {
+        video: deviceId
+          ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
+          : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false
-      })
+      }
+      stream = await navigator.mediaDevices.getUserMedia(constraints)
     } catch (e: any) {
       if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
         throw new Error('Доступ к камере запрещён — разрешите в браузере и перезагрузите.')
@@ -113,8 +137,19 @@ export class HandTracker {
       setTimeout(() => reject(new Error('Таймаут камеры')), 10000)
     })
 
+    // Сохраняем актуальный deviceId из потока
+    const track = stream.getVideoTracks()[0]
+    this.currentDeviceId = track?.getSettings().deviceId ?? null
+
     this.isRunning = true
+    if (!this.hands) return
     this.processLoop()
+  }
+
+  private stopStream(): void {
+    this.isRunning = false
+    ;(this.videoEl.srcObject as MediaStream)?.getTracks().forEach(t => t.stop())
+    this.videoEl.srcObject = null
   }
 
   private async processLoop(): Promise<void> {
@@ -124,8 +159,6 @@ export class HandTracker {
     }
     requestAnimationFrame(() => this.processLoop())
   }
-
-  // ─── Хелперы ────────────────────────────────────────────────────────────────
 
   private loadScript(src: string): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -138,7 +171,6 @@ export class HandTracker {
     })
   }
 
-  /** Ждёт появления window[name] с таймаутом */
   private waitForGlobal(name: string, timeoutMs: number): Promise<any> {
     return new Promise((resolve, reject) => {
       const deadline = Date.now() + timeoutMs
@@ -155,10 +187,8 @@ export class HandTracker {
     })
   }
 
-  onHands(cb: HandsCallback): void      { this.callbacks.push(cb) }
-  getVideoElement(): HTMLVideoElement    { return this.videoEl }
-  stop(): void {
-    this.isRunning = false
-    ;(this.videoEl.srcObject as MediaStream)?.getTracks().forEach(t => t.stop())
-  }
+  getCurrentDeviceId(): string | null { return this.currentDeviceId }
+  onHands(cb: HandsCallback): void { this.callbacks.push(cb) }
+  getVideoElement(): HTMLVideoElement { return this.videoEl }
+  stop(): void { this.stopStream() }
 }
