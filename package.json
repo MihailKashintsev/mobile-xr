@@ -5,12 +5,9 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc && vite build",
-    "preview": "vite preview --host",
-    "lint": "eslint src --ext .ts"
+    "preview": "vite preview --host"
   },
   "dependencies": {
-    "@mediapipe/hands": "^0.4.1675469240",
-    "@mediapipe/camera_utils": "^0.3.1675466862",
     "three": "^0.160.0"
   },
   "devDependencies": {
