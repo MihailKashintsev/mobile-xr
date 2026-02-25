@@ -27,9 +27,7 @@ export class FloatingPanel {
     const h = opts.height ?? 0.9
 
     // Основная панель — полупрозрачное стекло
-    const geo = new THREE.RoundedBoxGeometry ? 
-      new (THREE.RoundedBoxGeometry as any)(w, h, 0.02, 4, 8) :
-      new THREE.BoxGeometry(w, h, 0.02)
+    const geo = new THREE.BoxGeometry(w, h, 0.02)
     
     const mat = new THREE.MeshPhysicalMaterial({
       color: 0x1a1a2e,
