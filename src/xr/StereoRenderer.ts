@@ -131,7 +131,7 @@ export class StereoRenderer {
   private makeRT(w: number, h: number) {
     return new THREE.WebGLRenderTarget(w, h, {
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat, colorSpace: THREE.SRGBColorSpace
+      format: THREE.RGBAFormat, colorSpace: THREE.LinearSRGBColorSpace
     })
   }
 

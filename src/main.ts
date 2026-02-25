@@ -98,12 +98,12 @@ async function main(): Promise<void> {
     }
 
     // Полная визуализация рук
-    const hideCursors = scene.isStereo()
+    // Руки показываем всегда — и в обычном режиме и в VR
     ;[
       { cursor: leftCursor,  lm: leftLM,  g: leftG  },
       { cursor: rightCursor, lm: rightLM, g: rightG },
     ].forEach(({ cursor, lm, g }) => {
-      if (!lm || !g || hideCursors) { cursor.setVisible(false); return }
+      if (!lm || !g) { cursor.setVisible(false); return }
       cursor.updateFromLandmarks(
         lm,
         (lmk) => landmarkToWorld(lmk, scene.camera),
@@ -153,11 +153,6 @@ async function main(): Promise<void> {
     setProgress(100, '✅ Готово!')
     setTimeout(() => loadingScreen.classList.add('hidden'), 400)
 
-    cameraPicker = new CameraPicker(tracker, () => {
-      scene.setupARBackground(tracker.getVideoElement())
-    })
-    document.getElementById('camera-btn')?.addEventListener('click', () => cameraPicker!.toggle())
-
   } catch (err: any) {
     console.error('HandTracker error:', err)
     setProgress(100, `⚠️ ${err.message}`)
@@ -167,6 +162,12 @@ async function main(): Promise<void> {
       showToast('Отслеживание рук недоступно', 5000)
     }, 3000)
   }
+
+  // ─── CameraPicker — создаём всегда после init (даже если были ошибки) ────────
+  cameraPicker = new CameraPicker(tracker, () => {
+    scene.setupARBackground(tracker.getVideoElement())
+  })
+  document.getElementById('camera-btn')?.addEventListener('click', () => cameraPicker!.toggle())
 
   // ─── Стерео / калибровка ──────────────────────────────────────────────────
   function ensureCalibPanel(): void {
