@@ -76,13 +76,13 @@ export class CalibrationPanel {
     this.container.classList.add('open')
     this.syncSlidersFromCalib()
     // Блокируем ориентацию — чтобы не вращало во время настройки
-    try { screen.orientation?.lock('portrait') } catch {}
+    try { (screen.orientation as any)?.lock('portrait') } catch {}
   }
 
   close(): void {
     this.visible = false
     this.container.classList.remove('open')
-    try { screen.orientation?.unlock() } catch {}
+    try { (screen.orientation as any)?.unlock() } catch {}
   }
 
   toggle(): void { this.visible ? this.close() : this.open() }

@@ -186,9 +186,9 @@ async function main(): Promise<void> {
     if (isStereo) {
       ensureCalibPanel()
       // Блокируем ориентацию в горизонтальный режим для VR
-      try { screen.orientation?.lock('landscape') } catch {}
+      try { (screen.orientation as any)?.lock('landscape') } catch {}
     } else {
-      try { screen.orientation?.unlock() } catch {}
+      try { (screen.orientation as any)?.unlock() } catch {}
     }
   }
 }
