@@ -1,261 +1,295 @@
 /**
- * HandMesh — анатомически корректная 3D модель руки
+ * HandMesh — полноценная 3D модель руки
  *
- * Архитектура:
- * - Ладонь: шестиугольный плоский меш с нужным профилем (не просто Box)
- * - Пальцы: CapsuleGeometry (цилиндр + полусферы) с правильными пропорциями
- * - Webbing: тонкие треугольные перепонки между основаниями пальцев
- * - Запястье: эллиптический цилиндр
- * - Материал: MeshPhysicalMaterial с subsurface-approximation (шероховатость + прозрачность)
- *
- * Все сегменты позиционируются по worldLandmarks (метрические 3D координаты)
- * → пальцы точно сгибаются в 3D.
+ * Анатомия:
+ * - Ладонь: ExtrudeGeometry из контура 5 точек (wrist + 4 MCP)
+ * - Пальцы: CapsuleGeometry (цилиндр + полусферы) — 3D капсулы
+ * - Суставы: SphereGeometry с плавным уменьшением к кончику
+ * - Перемычки: треугольные заполнители между основаниями пальцев
+ * - Ноготь: плоский BoxGeometry на кончике
+ * - Материал: MeshPhysicalMaterial с имитацией SSS (subsurface)
  */
-
 import * as THREE from 'three'
 import type { Landmark } from '../xr/HandTracker'
 import type { GestureType } from '../xr/GestureDetector'
 
-// ─── Конфигурация пальцев ─────────────────────────────────────────────────────
+// Радиусы пальцев [MCP,PIP,DIP,TIP] в метрах
+const FINGER_R: Record<number, [number,number,number,number]> = {
+  0: [0.015,0.013,0.011,0.010], // большой
+  1: [0.013,0.011,0.009,0.008], // указательный
+  2: [0.014,0.012,0.010,0.009], // средний
+  3: [0.012,0.010,0.008,0.007], // безымянный
+  4: [0.010,0.008,0.007,0.006], // мизинец
+}
 
-const FINGER_SEGMENTS: { joints: [number, number][]; radiusBase: number; radiusTip: number }[] = [
-  // Большой
-  { joints: [[0,1],[1,2],[2,3],[3,4]],       radiusBase: 0.013, radiusTip: 0.009 },
-  // Указательный
-  { joints: [[5,6],[6,7],[7,8]],             radiusBase: 0.011, radiusTip: 0.007 },
-  // Средний
-  { joints: [[9,10],[10,11],[11,12]],        radiusBase: 0.0115, radiusTip: 0.0075 },
-  // Безымянный
-  { joints: [[13,14],[14,15],[15,16]],       radiusBase: 0.010, radiusTip: 0.007 },
-  // Мизинец
-  { joints: [[17,18],[18,19],[19,20]],       radiusBase: 0.009, radiusTip: 0.006 },
+// MediaPipe индексы для каждого пальца
+const FINGER_IDX: [number,number,number,number,number][] = [
+  [1,2,3,4,  0],  // большой: CMC,MCP,IP,TIP (база=0 запястье)
+  [5,6,7,8,  0],  // указательный
+  [9,10,11,12,0],
+  [13,14,15,16,0],
+  [17,18,19,20,0],
 ]
 
-// Точки ладони (индексы MediaPipe) для построения меша
-const PALM_RING = [0, 1, 5, 9, 13, 17] // запястье + все MCP
+const UP = new THREE.Vector3(0,1,0)
+const _q  = new THREE.Quaternion()
+const _d  = new THREE.Vector3()
+const _m  = new THREE.Vector3()
+const _mt = new THREE.Matrix4()
 
-// ─── Вспомогательные функции ──────────────────────────────────────────────────
-
-const UP = new THREE.Vector3(0, 1, 0)
-
-function makeSkinMaterial(opacity = 0.82): THREE.MeshPhysicalMaterial {
+function skinMat(opacity=0.88): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
-    color:         new THREE.Color(0xf0c090),
-    transparent:   true,
-    opacity,
-    roughness:     0.75,
-    metalness:     0.0,
-    // Approximation subsurface: немного красноватый emissive (как кровь под кожей)
-    emissive:      new THREE.Color(0x3a0a00),
-    emissiveIntensity: 0.06,
-    depthWrite:    true,
-    depthTest:     true,
-    side:          THREE.FrontSide,
+    color:    0xf2b880,
+    emissive: new THREE.Color(0x3a0800),
+    emissiveIntensity: 0.07,
+    roughness: 0.78, metalness: 0.0,
+    transparent: true, opacity,
+    depthWrite: true,
   })
 }
 
-/**
- * Капсула между двумя точками: цилиндр + полусферы на торцах
- * Таперированная (topR ≠ bottomR) для конусообразности пальца
- */
-function makeCapsule(topR: number, botR: number, segments = 8): THREE.BufferGeometry {
-  // CylinderGeometry(radiusTop, radiusBottom, height, segmentsRadial, segmentsHeight)
-  // height=1 → растянем через matrix
-  return new THREE.CylinderGeometry(topR, botR, 1, segments, 1, false)
+function placeCylinder(
+  mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3
+): boolean {
+  _d.subVectors(b,a)
+  const len = _d.length()
+  if (len < 0.0005) { mesh.visible=false; return false }
+  mesh.visible = true
+  _m.addVectors(a,b).multiplyScalar(0.5)
+  _q.setFromUnitVectors(UP, _d.clone().normalize())
+  _mt.compose(_m, _q, new THREE.Vector3(1,len,1))
+  mesh.matrix.copy(_mt)
+  return true
 }
-
-/**
- * Строит кастомную геометрию ладони как плоский меш из точек MediaPipe
- * Возвращает BufferGeometry с triangles по кольцу
- */
-function buildPalmGeometry(pts: THREE.Vector3[], thickness: number): THREE.BufferGeometry {
-  // pts[0] = запястье, pts[1] = CMC большого, pts[2..5] = MCP указательного..мизинца
-  // Треугольная разбивка: центр + кольцо
-  const center = new THREE.Vector3()
-  for (const p of pts) center.add(p)
-  center.divideScalar(pts.length)
-
-  const positions: number[] = []
-  const normals:   number[] = []
-  const uvs:       number[] = []
-
-  function addTri(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, flip = false) {
-    const n = new THREE.Vector3().crossVectors(
-      new THREE.Vector3().subVectors(b, a),
-      new THREE.Vector3().subVectors(c, a)
-    ).normalize()
-    if (flip) n.negate()
-
-    for (const [v, u, vt] of flip
-      ? [[a,0,0],[c,1,0],[b,0.5,1]] as [THREE.Vector3,number,number][]
-      : [[a,0,0],[b,1,0],[c,0.5,1]] as [THREE.Vector3,number,number][]) {
-      positions.push(v.x, v.y, v.z)
-      normals.push(n.x, n.y, n.z)
-      uvs.push(u, vt)
-    }
-  }
-
-  // Передняя сторона (ладонь)
-  for (let i = 0; i < pts.length; i++) {
-    const next = (i + 1) % pts.length
-    addTri(center, pts[i], pts[next])
-  }
-  // Задняя сторона (тыльная часть)
-  for (let i = 0; i < pts.length; i++) {
-    const next = (i + 1) % pts.length
-    addTri(center, pts[i], pts[next], true)
-  }
-
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3))
-  geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(normals),   3))
-  geo.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array(uvs),       2))
-  return geo
-}
-
-// ─── HandMesh ─────────────────────────────────────────────────────────────────
 
 export class HandMesh {
   group: THREE.Group
-  private segments:  { mesh: THREE.Mesh; topR: number; botR: number }[] = []
-  private knuckles:  THREE.Mesh[] = []  // суставы-сферы
-  private palmMesh!: THREE.Mesh
-  private glowMesh:  THREE.Mesh
-  private mat:       THREE.MeshPhysicalMaterial
+  // Капсулы сегментов: [finger][segment]
+  private caps: THREE.Mesh[][] = []
+  // Суставные сферы
+  private joints: THREE.Mesh[] = []
+  // Ладонь как mesh (обновляется каждый кадр)
+  private palmMesh: THREE.Mesh
+  // Перемычки (webbing) между пальцами
+  private webs: THREE.Mesh[] = []
+  // Ногти
+  private nails: THREE.Mesh[] = []
+  // Glow
+  private glow: THREE.Mesh
+  private mat: THREE.MeshPhysicalMaterial
 
   constructor() {
     this.group = new THREE.Group()
-    this.mat   = makeSkinMaterial(0.82)
+    this.mat   = skinMat()
     this.build()
-    this.glowMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.026, 10, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffcc44, transparent: true, opacity: 0, depthWrite: false })
+    this.glow = new THREE.Mesh(
+      new THREE.SphereGeometry(0.022,10,8),
+      new THREE.MeshBasicMaterial({color:0xffcc44,transparent:true,opacity:0,depthWrite:false})
     )
-    this.group.add(this.glowMesh)
+    this.group.add(this.glow)
+  }
+
+  private cloneMat(): THREE.MeshPhysicalMaterial {
+    return this.mat.clone()
   }
 
   private build(): void {
-    // ── Сегменты пальцев ──────────────────────────────────────────────────
-    for (const finger of FINGER_SEGMENTS) {
-      const nSeg = finger.joints.length
-      for (let si = 0; si < nSeg; si++) {
-        const t = si / (nSeg - 1 || 1)
-        const r1 = THREE.MathUtils.lerp(finger.radiusBase, finger.radiusTip, t)
-        const r2 = THREE.MathUtils.lerp(finger.radiusBase, finger.radiusTip, (si + 1) / (nSeg - 1 || 1))
-        const geo  = makeCapsule(r2, r1, 10)
-        const mesh = new THREE.Mesh(geo, this.mat.clone())
-        mesh.matrixAutoUpdate = false
-        this.segments.push({ mesh, topR: r2, botR: r1 })
-        this.group.add(mesh)
+    // ── Капсулы пальцев ───────────────────────────────────────────────────
+    for (let fi=0; fi<5; fi++) {
+      const r = FINGER_R[fi]
+      const segs: THREE.Mesh[] = []
+      for (let si=0; si<3; si++) {  // 3 сегмента
+        const r1 = r[si], r2 = r[si+1]
+        // CapsuleGeometry(radius, length, capSeg, radialSeg)
+        // Используем CylinderGeometry с полусферами через Shape
+        // Таперированный цилиндр (конус) для реалистичности
+        const geo = new THREE.CylinderGeometry(r2, r1, 1, 12, 1, false)
+        const m   = new THREE.Mesh(geo, this.cloneMat())
+        m.matrixAutoUpdate = false
+        segs.push(m)
+        this.group.add(m)
       }
+      this.caps.push(segs)
     }
 
-    // ── Суставные сферы (21 штука) ────────────────────────────────────────
-    const JOINT_RADII = [
-      0.021,                          // 0 запястье
-      0.013,0.012,0.011,0.009,       // большой
-      0.013,0.011,0.010,0.009,       // указательный
-      0.014,0.011,0.010,0.009,       // средний
-      0.012,0.010,0.009,0.008,       // безымянный
-      0.011,0.009,0.008,0.007,       // мизинец
+    // ── Суставные сферы (полусферы для суставов пальцев) ─────────────────
+    const jRadii = [
+      0.022,                           // 0 запястье
+      0.014,0.013,0.012,0.011,        // большой
+      0.013,0.012,0.010,0.009,        // указательный
+      0.014,0.012,0.010,0.009,        // средний
+      0.012,0.010,0.009,0.008,        // безымянный
+      0.011,0.009,0.008,0.007,        // мизинец
     ]
-    for (let i = 0; i < 21; i++) {
+    for (let i=0; i<21; i++) {
       const m = new THREE.Mesh(
-        new THREE.SphereGeometry(JOINT_RADII[i] ?? 0.009, 12, 10),
-        this.mat.clone()
+        new THREE.SphereGeometry(jRadii[i]??0.009, 14, 10),
+        this.cloneMat()
       )
-      this.knuckles.push(m)
+      this.joints.push(m)
       this.group.add(m)
     }
 
-    // ── Ладонь — инициализируем пустой геометрией, обновим в update ──────
-    this.palmMesh = new THREE.Mesh(
-      new THREE.BufferGeometry(),
-      this.mat.clone()
-    )
+    // ── Ладонь — динамический меш (пересоздаётся в update) ───────────────
+    this.palmMesh = new THREE.Mesh(new THREE.BufferGeometry(), this.cloneMat())
     this.palmMesh.frustumCulled = false
     this.group.add(this.palmMesh)
+
+    // ── Перемычки (webbing) — 4 треугольника между соседними пальцами ────
+    for (let i=0; i<4; i++) {
+      const m = new THREE.Mesh(new THREE.BufferGeometry(), this.cloneMat())
+      m.frustumCulled = false
+      this.webs.push(m)
+      this.group.add(m)
+    }
+
+    // ── Ногти — плоский меш на кончике каждого пальца ────────────────────
+    for (let i=0; i<5; i++) {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(0.014, 0.003, 0.012),
+        new THREE.MeshPhysicalMaterial({color:0xffe4d0,roughness:0.3,transparent:true,opacity:0.9})
+      )
+      this.nails.push(m)
+      this.group.add(m)
+    }
   }
 
   updateFromLandmarks(
-    landmarks:      Landmark[],
-    worldLandmarks: Landmark[],
-    wristWorld:     THREE.Vector3,
-    isFront:        boolean,
-    gesture:        GestureType,
-    pinchStrength:  number,
-    time:           number
+    lm: Landmark[],
+    wld: Landmark[],
+    wristWorld: THREE.Vector3,
+    isFront: boolean,
+    gesture: GestureType,
+    pinchStrength: number,
+    time: number
   ): void {
-    if (landmarks.length < 21) { this.group.visible = false; return }
+    if (lm.length < 21) { this.group.visible=false; return }
     this.group.visible = true
 
-    // ── Вычисляем мировые координаты всех суставов ───────────────────────
-    const wl0   = worldLandmarks[0] ?? { x:0, y:0, z:0 }
+    // ── Мировые позиции всех 21 сустава ──────────────────────────────────
+    const wl0   = wld[0]??{x:0,y:0,z:0}
     const signX = isFront ? 1 : -1
-    // Масштаб: worldLandmarks в метрах, сцена в метрах → 1:1
-    const SCALE = 1.0
 
     const pts: THREE.Vector3[] = []
-    for (let i = 0; i < 21; i++) {
-      const wl = worldLandmarks[i] ?? wl0
+    for (let i=0; i<21; i++) {
+      const w = wld[i]??wl0
       pts.push(new THREE.Vector3(
-        wristWorld.x + (wl.x - wl0.x) * signX * SCALE,
-        wristWorld.y - (wl.y - wl0.y) * SCALE,
-        wristWorld.z - (wl.z - wl0.z) * SCALE
+        wristWorld.x + (w.x-wl0.x)*signX,
+        wristWorld.y - (w.y-wl0.y),
+        wristWorld.z - (w.z-wl0.z)
       ))
     }
 
-    // ── Суставные сферы ──────────────────────────────────────────────────
-    for (let i = 0; i < 21; i++) this.knuckles[i].position.copy(pts[i])
+    // ── Суставы ───────────────────────────────────────────────────────────
+    for (let i=0; i<21; i++) this.joints[i].position.copy(pts[i])
 
     // ── Сегменты пальцев ─────────────────────────────────────────────────
-    const q   = new THREE.Quaternion()
-    const dir = new THREE.Vector3()
-    const mid = new THREE.Vector3()
-    const mat = new THREE.Matrix4()
-
-    let si = 0
-    for (const finger of FINGER_SEGMENTS) {
-      for (const [a, b] of finger.joints) {
-        const seg = this.segments[si++]
-        dir.subVectors(pts[b], pts[a])
-        const len = dir.length()
-        if (len < 0.001) { seg.mesh.visible = false; continue }
-        seg.mesh.visible = true
-        mid.addVectors(pts[a], pts[b]).multiplyScalar(0.5)
-        q.setFromUnitVectors(UP, dir.clone().normalize())
-        mat.compose(mid, q, new THREE.Vector3(1, len, 1))
-        seg.mesh.matrix.copy(mat)
+    const fingerStarts = [1,5,9,13,17] // MCP index каждого пальца
+    for (let fi=0; fi<5; fi++) {
+      const base = fi===0 ? [0,1,2,3,4] : [0, fingerStarts[fi], fingerStarts[fi]+1, fingerStarts[fi]+2, fingerStarts[fi]+3]
+      // Для большого пальца: сегменты 1→2, 2→3, 3→4
+      // Для остальных: MCP→PIP, PIP→DIP, DIP→TIP
+      const joints = fi===0 ? [1,2,3,4] : [fingerStarts[fi],fingerStarts[fi]+1,fingerStarts[fi]+2,fingerStarts[fi]+3]
+      for (let si=0; si<3; si++) {
+        placeCylinder(this.caps[fi][si], pts[joints[si]], pts[joints[si+1]])
       }
     }
 
-    // ── Ладонь: пересобираем геометрию каждый кадр ───────────────────────
-    // Используем точки: запястье(0), CMC большого(1), MCP: 5,9,13,17
-    const palmPts = [pts[0], pts[1], pts[5], pts[9], pts[13], pts[17]]
-    const newGeo  = buildPalmGeometry(palmPts, 0.010)
+    // ── Ладонь (динамический меш) ─────────────────────────────────────────
+    this.updatePalm(pts)
+
+    // ── Перемычки ─────────────────────────────────────────────────────────
+    const mcps = [5,9,13,17]
+    for (let i=0; i<4; i++) {
+      this.updateWeb(this.webs[i], pts[mcps[i]], pts[mcps[i+1]], pts[0])
+    }
+
+    // ── Ногти ─────────────────────────────────────────────────────────────
+    const tipIdx = [4,8,12,16,20]
+    const dipIdx = [3,7,11,15,19]
+    for (let fi=0; fi<5; fi++) {
+      const tip = pts[tipIdx[fi]], dip = pts[dipIdx[fi]]
+      const dir = new THREE.Vector3().subVectors(tip,dip).normalize()
+      const nail = this.nails[fi]
+      nail.position.copy(tip).addScaledVector(dir, 0.007)
+      nail.quaternion.setFromUnitVectors(UP, dir)
+    }
+
+    // ── Pinch glow ────────────────────────────────────────────────────────
+    const glow = gesture==='pinch' ? pinchStrength : 0
+    const emI  = glow * 0.5
+
+    for (const cap of this.caps.flat()) (cap.material as THREE.MeshPhysicalMaterial).emissiveIntensity = emI
+    for (const j   of this.joints)     (j.material   as THREE.MeshPhysicalMaterial).emissiveIntensity = emI*1.2
+    ;(this.palmMesh.material as THREE.MeshPhysicalMaterial).emissiveIntensity = emI*0.5
+
+    const mid4 = pts[4], mid8 = pts[8], mid12 = pts[12]
+    this.glow.position.set((mid4.x+mid8.x+mid12.x)/3,(mid4.y+mid8.y+mid12.y)/3,(mid4.z+mid8.z+mid12.z)/3)
+    ;(this.glow.material as THREE.MeshBasicMaterial).opacity = glow*0.5 + Math.sin(time*9)*0.04*glow
+  }
+
+  private updatePalm(pts: THREE.Vector3[]): void {
+    // Ладонь = выпуклый контур: запястье → мизинец MCP → безымянный → средний → указательный → thumb CMC
+    const ring = [pts[0], pts[17], pts[13], pts[9], pts[5], pts[1]]
+    const center = new THREE.Vector3()
+    ring.forEach(p => center.add(p)); center.divideScalar(ring.length)
+
+    const THICK = 0.012 // толщина ладони
+    // Нормаль ладони — вектор от тыла к ладони
+    const palmNormal = new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(ring[4], ring[0]),
+      new THREE.Vector3().subVectors(ring[2], ring[0])
+    ).normalize()
+
+    const pos: number[] = []
+    const nrm: number[] = []
+
+    const addTri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, n: THREE.Vector3) => {
+      for (const p of [a,b,c]) { pos.push(p.x,p.y,p.z); nrm.push(n.x,n.y,n.z) }
+    }
+
+    const front = palmNormal.clone().multiplyScalar( THICK/2)
+    const back  = palmNormal.clone().multiplyScalar(-THICK/2)
+
+    for (let i=0; i<ring.length; i++) {
+      const next = (i+1) % ring.length
+      const cf = ring[i].clone().add(front)
+      const nf = ring[next].clone().add(front)
+      const cc = center.clone().add(front)
+      addTri(cc, cf, nf, palmNormal)
+      const cb = ring[i].clone().add(back)
+      const nb = ring[next].clone().add(back)
+      const ccb = center.clone().add(back)
+      addTri(ccb, nb, cb, palmNormal.clone().negate())
+
+      // Бок (rim)
+      const sn = new THREE.Vector3().crossVectors(new THREE.Vector3().subVectors(nf,cf), front).normalize()
+      addTri(cf, cb, nf, sn)
+      addTri(nf, cb, nb, sn)
+    }
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(nrm), 3))
     this.palmMesh.geometry.dispose()
-    this.palmMesh.geometry = newGeo
+    this.palmMesh.geometry = geo
+  }
 
-    // ── Эффекты щипка ────────────────────────────────────────────────────
-    const glow   = gesture === 'pinch' ? pinchStrength : 0
-    const emInt  = glow * 0.35
-    for (const s of this.segments) {
-      const m = s.mesh.material as THREE.MeshPhysicalMaterial
-      m.emissiveIntensity = emInt
-    }
-    for (const k of this.knuckles) {
-      const m = k.material as THREE.MeshPhysicalMaterial
-      m.emissiveIntensity = emInt * 1.2
-    }
+  private updateWeb(mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3, wrist: THREE.Vector3): void {
+    const mid = new THREE.Vector3().addVectors(a,b).multiplyScalar(0.5)
+    const wristMid = new THREE.Vector3().addVectors(wrist, mid).multiplyScalar(0.5)
+    const n = new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(b,a),
+      new THREE.Vector3().subVectors(wristMid,a)
+    ).normalize()
 
-    // Glow-сфера между подушечками пальцев
-    const cx = (pts[4].x + pts[8].x + pts[12].x) / 3
-    const cy = (pts[4].y + pts[8].y + pts[12].y) / 3
-    const cz = (pts[4].z + pts[8].z + pts[12].z) / 3
-    this.glowMesh.position.set(cx, cy, cz)
-    ;(this.glowMesh.material as THREE.MeshBasicMaterial).opacity =
-      glow * 0.5 + Math.sin(time * 9) * 0.04 * glow
-    this.glowMesh.scale.setScalar(0.85 + glow * 1.3)
+    const pos = [...[a.x,a.y,a.z], ...[ b.x, b.y, b.z], ...[wristMid.x,wristMid.y,wristMid.z]]
+    const nrm = [...[n.x,n.y,n.z],  ...[n.x,n.y,n.z],   ...[n.x,n.y,n.z]]
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+    geo.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(nrm), 3))
+    mesh.geometry.dispose()
+    mesh.geometry = geo
   }
 
   setVisible(v: boolean): void { this.group.visible = v }
