@@ -1,53 +1,45 @@
-/**
- * StereoRenderer
- *
- * Исправления цвета:
- *  renderer.outputColorSpace применяет linear→sRGB при записи в RT.
- *  RT помечен как LinearSRGB → шейдер читает "linear" но там sRGB → двойная гамма.
- *  Решение: на время рендера в RT ставим outputColorSpace=LinearSRGB (нет конвертации),
- *  перед выводом quad-ов восстанавливаем SRGBColorSpace.
- *
- * Исправления IPD / lensDistance:
- *  camL.copy(main) перезаписывал aspect/fov каждый кадр.
- *  Теперь копируем ТОЛЬКО quaternion и position.
- */
-
 import * as THREE from 'three'
 
 export interface StereoCalibration {
-  ipd:            number   // мм (50–80)
-  lensDistance:   number   // оптич. центр дисторсии по Y (0.1–0.9)
+  ipd:            number   // мм
+  lensDistance:   number   // Y-центр дисторсии
   k1:             number
   k2:             number
   verticalOffset: number
-  fov:            number   // °
+  fov:            number
   zoom:           number
+  eyeShiftL:      number   // горизонтальный сдвиг левого глаза (-0.15 .. 0.15)
+  eyeShiftR:      number   // горизонтальный сдвиг правого глаза
 }
 
 export const DEFAULT_CALIBRATION: StereoCalibration = {
   ipd: 63, lensDistance: 0.5, k1: 0.22, k2: 0.10,
-  verticalOffset: 0, fov: 90, zoom: 1.0
+  verticalOffset: 0, fov: 90, zoom: 1.0,
+  eyeShiftL: 0, eyeShiftR: 0
 }
 
-const STORAGE_KEY = 'mobile-xr-stereo-calib'
+const STORAGE_KEY = 'mobile-xr-stereo-calib-v2'
 
 const VERT = `
   varying vec2 vUv;
   void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
 `
 
-// lensCenter сдвигает центр дисторсии — это и есть "дистанция линзы"
+// eyeShift сдвигает UV горизонтально до применения дисторсии
 const FRAG = `
   precision highp float;
   uniform sampler2D tEye;
-  uniform float k1, k2, zoom;
-  uniform vec2 lensCenter;
-  varying vec2 vUv;
+  uniform float k1, k2, zoom, eyeShift;
+  uniform vec2  lensCenter;
+  varying vec2  vUv;
+
   void main() {
-    vec2 d   = vUv - lensCenter;
-    float r2 = dot(d, d);
-    float b  = 1.0 + k1 * r2 + k2 * r2 * r2;
-    vec2 s   = lensCenter + d * b * zoom;
+    vec2 uv      = vec2(vUv.x + eyeShift, vUv.y);
+    vec2 d       = uv - lensCenter;
+    float r2     = dot(d, d);
+    float barrel = 1.0 + k1 * r2 + k2 * r2 * r2;
+    vec2  s      = lensCenter + d * barrel * zoom;
+
     if (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0)
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
     else
@@ -125,10 +117,6 @@ export class StereoRenderer {
     this.r.getSize(css)
     const CW = css.x, CH = css.y, CHW = Math.floor(CW / 2)
 
-    // ── Рендер в RT: отключаем outputColorSpace чтобы не было двойной гаммы ──
-    // Renderer обычно применяет linear→sRGB при записи в любой буфер.
-    // Если RT помечен LinearSRGBColorSpace — значит данные должны быть Linear.
-    // Отключаем конвертацию при записи в RT, восстанавливаем потом.
     const origCS = this.r.outputColorSpace
     this.r.outputColorSpace = THREE.LinearSRGBColorSpace
 
@@ -137,18 +125,14 @@ export class StereoRenderer {
       [this.rtR, this.bgR, this.camR],
     ] as [THREE.WebGLRenderTarget, THREE.Scene, THREE.PerspectiveCamera][]) {
       this.r.setRenderTarget(rt)
-      this.r.autoClear = true;  this.r.clear()
-      this.r.autoClear = false
+      this.r.autoClear = true; this.r.clear(); this.r.autoClear = false
       this.r.render(bg, this.bgCam)
       this.r.render(scene, cam)
     }
 
-    // ── Quad вывод: восстанавливаем sRGB чтобы renderer скорректировал цвет ───
     this.r.outputColorSpace = origCS
-
     this.r.setRenderTarget(null)
-    this.r.autoClear = true; this.r.clear()
-    this.r.autoClear = false
+    this.r.autoClear = true; this.r.clear(); this.r.autoClear = false
     this.r.setScissorTest(true)
 
     this.r.setViewport(0,   0, CHW, CH); this.r.setScissor(0,   0, CHW, CH)
@@ -157,8 +141,7 @@ export class StereoRenderer {
     this.r.render(this.qsR, this.qCam)
 
     this.r.setScissorTest(false)
-    this.r.setViewport(0, 0, CW, CH)
-    this.r.setScissor( 0, 0, CW, CH)
+    this.r.setViewport(0, 0, CW, CH); this.r.setScissor(0, 0, CW, CH)
     this.r.autoClear = true
   }
 
@@ -174,37 +157,35 @@ export class StereoRenderer {
     this.rtL = this.makeRT(PHW, PH); this.rtR = this.makeRT(PHW, PH)
     this.lastPW = PHW; this.lastPH = PH
 
-    this.matL = this.makeMat(this.rtL.texture)
-    this.matR = this.makeMat(this.rtR.texture)
+    this.matL = this.makeMat(this.rtL.texture, this.calib.eyeShiftL)
+    this.matR = this.makeMat(this.rtR.texture, this.calib.eyeShiftR)
+
     this.qsL.clear(); this.qsR.clear()
     this.qsL.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.matL))
     this.qsR.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.matR))
+
     this.updateAspect(PHW, PH)
   }
 
   private makeRT(w: number, h: number): THREE.WebGLRenderTarget {
     return new THREE.WebGLRenderTarget(w, h, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format:    THREE.RGBAFormat,
-      // LinearSRGB: будем хранить линейные значения (рендерим без конвертации)
-      colorSpace: THREE.LinearSRGBColorSpace,
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat, colorSpace: THREE.LinearSRGBColorSpace,
     })
   }
 
-  private makeMat(tex: THREE.Texture): THREE.ShaderMaterial {
+  private makeMat(tex: THREE.Texture, shift: number): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
-      vertexShader:   VERT,
-      fragmentShader: FRAG,
+      vertexShader: VERT, fragmentShader: FRAG,
       uniforms: {
         tEye:       { value: tex },
         k1:         { value: this.calib.k1 },
         k2:         { value: this.calib.k2 },
         zoom:       { value: this.calib.zoom },
+        eyeShift:   { value: shift },
         lensCenter: { value: new THREE.Vector2(0.5, this.calib.lensDistance) },
       },
-      depthTest:  false,
-      depthWrite: false,
+      depthTest: false, depthWrite: false,
     })
   }
 
@@ -220,30 +201,32 @@ export class StereoRenderer {
     const vOff = this.calib.verticalOffset
     const q    = main.quaternion
 
-    // Копируем ТОЛЬКО ориентацию и позицию — НЕ copy() чтобы не сбросить aspect/fov!
-    this.camL.quaternion.copy(q)
-    this.camR.quaternion.copy(q)
-    this.camL.position.copy(main.position)
-      .add(new THREE.Vector3(-half, vOff, 0).applyQuaternion(q))
-    this.camR.position.copy(main.position)
-      .add(new THREE.Vector3( half, vOff, 0).applyQuaternion(q))
-
+    this.camL.quaternion.copy(q); this.camR.quaternion.copy(q)
+    this.camL.position.copy(main.position).add(new THREE.Vector3(-half, vOff, 0).applyQuaternion(q))
+    this.camR.position.copy(main.position).add(new THREE.Vector3( half, vOff, 0).applyQuaternion(q))
     this.camL.updateProjectionMatrix(); this.camR.updateProjectionMatrix()
   }
 
   private applyCalib(): void {
     const lc = new THREE.Vector2(0.5, this.calib.lensDistance)
-    for (const mat of [this.matL, this.matR]) {
-      if (!mat) continue
-      mat.uniforms.k1.value         = this.calib.k1
-      mat.uniforms.k2.value         = this.calib.k2
-      mat.uniforms.zoom.value       = this.calib.zoom
-      mat.uniforms.lensCenter.value = lc.clone()
+    if (this.matL) {
+      this.matL.uniforms.k1.value         = this.calib.k1
+      this.matL.uniforms.k2.value         = this.calib.k2
+      this.matL.uniforms.zoom.value       = this.calib.zoom
+      this.matL.uniforms.eyeShift.value   = this.calib.eyeShiftL
+      this.matL.uniforms.lensCenter.value = lc.clone()
+    }
+    if (this.matR) {
+      this.matR.uniforms.k1.value         = this.calib.k1
+      this.matR.uniforms.k2.value         = this.calib.k2
+      this.matR.uniforms.zoom.value       = this.calib.zoom
+      this.matR.uniforms.eyeShift.value   = this.calib.eyeShiftR
+      this.matR.uniforms.lensCenter.value = lc.clone()
     }
     const PHW = Math.max(1, Math.floor(this.r.domElement.width / 2))
     this.updateAspect(PHW, this.r.domElement.height)
   }
 
-  private save():void{try{localStorage.setItem(STORAGE_KEY,JSON.stringify(this.calib))}catch{}}
-  private load():Partial<StereoCalibration>{try{const r=localStorage.getItem(STORAGE_KEY);return r?JSON.parse(r):{}}catch{return{}}}
+  private save(): void { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.calib)) } catch {} }
+  private load(): Partial<StereoCalibration> { try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : {} } catch { return {} } }
 }

@@ -31,38 +31,41 @@ function setProgress(p: number, msg?: string): void {
 }
 
 async function main(): Promise<void> {
-  const versionBadge = document.getElementById('version-badge')
-  if (versionBadge) versionBadge.textContent = `Mobile XR v${APP_VERSION}`
+  const vb = document.getElementById('version-badge')
+  if (vb) vb.textContent = `Mobile XR v${APP_VERSION}`
 
   setProgress(10, 'Инициализация 3D сцены...')
   const appEl = document.getElementById('app')!
   const scene = new SceneManager(appEl)
   const winManager = new WindowManager(scene.scene, scene.camera)
 
+  // Освещение сцены
+  scene.scene.add(new THREE.AmbientLight(0xffffff, 0.5))
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8)
+  dirLight.position.set(0.5, 2, 3); scene.scene.add(dirLight)
+
   let cameraPicker: CameraPicker   | null = null
   let calibPanel:   CalibrationPanel| null = null
 
-  // ─── 3D окна ─────────────────────────────────────────────────────────────
   const mainWin = new XRWindow({
-    title: 'Mobile XR', icon: '🥽',
+    title: 'Mobile XR  🥽',
     position: new THREE.Vector3(-0.85, 0.15, -2.6),
     content: { buttons: [
-      { label: '✨ Частицы',  color: 0x6366f1, onClick: () => spawnParticles(scene.scene) },
-      { label: '📷 Камера',   color: 0x0891b2, onClick: () => cameraPicker?.toggle() },
-      { label: '👓 VR режим', color: 0x059669, onClick: () => toggleStereo() },
-      { label: '⚙ Настройки',color: 0x7c3aed, onClick: () => { ensureCalibPanel(); calibPanel?.open() } },
+      { label: '✨ Частицы',   color: 0x6366f1, onClick: () => spawnParticles(scene.scene) },
+      { label: '📷 Камера',    color: 0x0891b2, onClick: () => cameraPicker?.toggle() },
+      { label: '👓 VR режим',  color: 0x059669, onClick: () => toggleStereo() },
+      { label: '⚙ Настройки', color: 0x7c3aed, onClick: () => { ensureCalibPanel(); calibPanel?.open() } },
     ]}
   })
   winManager.add(mainWin)
 
   const infoWin = new XRWindow({
-    title: 'Инфо', icon: 'ℹ️',
-    width: 1.25, height: 0.90,
+    title: 'Инфо  ℹ️', width: 1.25, height: 0.90,
     position: new THREE.Vector3(0.95, 0.05, -2.4),
     content: { buttons: [
-      { label: `📦 v${APP_VERSION}`,color: 0x374151, onClick: () => showToast(`Mobile XR v${APP_VERSION}`) },
-      { label: '🐙 GitHub',         color: 0x24292e, onClick: () => window.open(`https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`, '_blank') },
-      { label: '🔄 Перезагрузить',  color: 0x1d4ed8, onClick: () => location.reload() },
+      { label: `v${APP_VERSION}`,       color: 0x374151, onClick: () => showToast(`Mobile XR v${APP_VERSION}`) },
+      { label: 'GitHub 🐙',            color: 0x24292e, onClick: () => window.open(`https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`, '_blank') },
+      { label: '🔄 Перезагрузить',     color: 0x1d4ed8, onClick: () => location.reload() },
     ]}
   })
   winManager.add(infoWin)
@@ -70,68 +73,68 @@ async function main(): Promise<void> {
   // ─── Визуализаторы рук ────────────────────────────────────────────────────
   let handMode: HandRenderMode = 'skeleton'
 
-  // Скелетные курсоры
   const leftCursor  = new HandCursor(0x06b6d4)
   const rightCursor = new HandCursor(0xa78bfa)
   leftCursor.addToScene(scene.scene)
   rightCursor.addToScene(scene.scene)
-  leftCursor.setVisible(false)
-  rightCursor.setVisible(false)
 
-  // 3D модели рук
   const leftMesh  = new HandMesh()
   const rightMesh = new HandMesh()
   leftMesh.addToScene(scene.scene)
   rightMesh.addToScene(scene.scene)
-  leftMesh.setVisible(false)
-  rightMesh.setVisible(false)
+  leftMesh.setVisible(false); rightMesh.setVisible(false)
+  leftCursor.setVisible(false); rightCursor.setVisible(false)
 
   setProgress(35, 'Загрузка MediaPipe...')
 
   const gesture = new GestureDetector()
   type GR = ReturnType<GestureDetector['detect']>
 
-  let leftG:   GR | null = null
-  let rightG:  GR | null = null
-  let leftLM:  Landmark[] | null = null
-  let rightLM: Landmark[] | null = null
+  let leftG:    GR | null       = null
+  let rightG:   GR | null       = null
+  let leftLM:   Landmark[]| null = null
+  let rightLM:  Landmark[]| null = null
+  let leftWLD:  Landmark[]| null = null  // world landmarks
+  let rightWLD: Landmark[]| null = null
   let handsReady = false
-  let isFrontCam = false   // <-- для корректного маппинга NDC
+  let isFrontCam = false
 
   // ─── Render loop ──────────────────────────────────────────────────────────
   function animate(): void {
     requestAnimationFrame(animate)
     const time = performance.now() * 0.001
 
-    // NDC для WindowManager
-    // Для задней камеры: НЕ отзеркаливаем X (1-x → x)
-    const ndcLm = (lm: Landmark) => isFrontCam
+    const ndcOf = (lm: Landmark) => isFrontCam
       ? { ndcX: (1 - lm.x) * 2 - 1, ndcY: -(lm.y * 2 - 1) }
       : { ndcX:  lm.x       * 2 - 1, ndcY: -(lm.y * 2 - 1) }
 
     const fingerNDC = [
-      leftG  ? ndcLm(leftG.indexTip)  : null,
-      rightG ? ndcLm(rightG.indexTip) : null,
+      leftG  ? ndcOf(leftG.indexTip)  : null,
+      rightG ? ndcOf(rightG.indexTip) : null,
     ]
 
     if (handsReady) winManager.update(time, [leftG, rightG], fingerNDC)
 
-    // Визуализация рук
     const hands = [
-      { lm: leftLM,  g: leftG,  cursor: leftCursor,  mesh: leftMesh },
-      { lm: rightLM, g: rightG, cursor: rightCursor, mesh: rightMesh },
+      { lm: leftLM,  wld: leftWLD,  g: leftG,  cursor: leftCursor,  mesh: leftMesh  },
+      { lm: rightLM, wld: rightWLD, g: rightG, cursor: rightCursor, mesh: rightMesh },
     ]
-    for (const { lm, g, cursor, mesh } of hands) {
-      const visible = !!(lm && g)
-      cursor.setVisible(visible && handMode === 'skeleton')
-      mesh.setVisible(  visible && handMode === '3d')
-      if (!visible) continue
+    for (const { lm, wld, g, cursor, mesh } of hands) {
+      const vis = !!(lm && g)
+      cursor.setVisible(vis && handMode === 'skeleton')
+      mesh.setVisible(  vis && handMode === '3d')
+      if (!vis) continue
 
       const toWorld = (lmk: Landmark) => landmarkToWorld(lmk, scene.camera, isFrontCam)
+
       if (handMode === 'skeleton') {
         cursor.updateFromLandmarks(lm!, toWorld, g!.type, g!.pinchStrength, time)
       } else {
-        mesh.updateFromLandmarks(lm!, toWorld, g!.type, g!.pinchStrength, time)
+        // 3D модель: используем worldLandmarks для точных изгибов пальцев
+        const wristWorld = toWorld(lm![0])
+        mesh.updateFromLandmarks(
+          lm!, wld ?? lm!, wristWorld, isFrontCam, g!.type, g!.pinchStrength, time
+        )
       }
     }
 
@@ -147,7 +150,7 @@ async function main(): Promise<void> {
     await tracker.init(p => {
       const msgs: [number, string][] = [
         [0,'Загрузка MediaPipe...'], [35,'Загрузка библиотеки...'],
-        [50,'Инициализация WASM...'],[80,'Запуск камеры...'], [100,'Готово!'],
+        [50,'Инициализация WASM...'], [80,'Запуск камеры...'], [100,'Готово!'],
       ]
       setProgress(50 + p * 0.5, [...msgs].reverse().find(([k]) => p >= k)?.[1] ?? '')
     })
@@ -156,15 +159,22 @@ async function main(): Promise<void> {
     isFrontCam = tracker.isFront()
 
     tracker.onHands(hands => {
-      leftG = null; rightG = null; leftLM = null; rightLM = null
+      leftG = null; rightG = null
+      leftLM = null; rightLM = null
+      leftWLD = null; rightWLD = null
       isFrontCam = tracker.isFront()
+
       for (const hand of hands) {
-        const g = gesture.detect(hand.landmarks)
-        // Задняя камера: MediaPipe отдаёт handedness от себя →
-        // то что MP считает "Left" = правая рука пользователя
-        const side = isFrontCam ? hand.handedness : (hand.handedness === 'Left' ? 'Right' : 'Left')
-        if (side === 'Left') { leftG = g; leftLM = hand.landmarks }
-        else                 { rightG = g; rightLM = hand.landmarks }
+        const g    = gesture.detect(hand.landmarks)
+        const side = isFrontCam
+          ? hand.handedness
+          : (hand.handedness === 'Left' ? 'Right' : 'Left')
+
+        if (side === 'Left') {
+          leftG = g; leftLM = hand.landmarks; leftWLD = hand.worldLandmarks
+        } else {
+          rightG = g; rightLM = hand.landmarks; rightWLD = hand.worldLandmarks
+        }
       }
       leftDot.classList.toggle('active',  !!leftG)
       rightDot.classList.toggle('active', !!rightG)
@@ -181,19 +191,17 @@ async function main(): Promise<void> {
     setTimeout(() => { loadingScreen.classList.add('hidden'); showToast('Трекинг рук недоступен', 5000) }, 3000)
   }
 
-  // ─── CameraPicker ─────────────────────────────────────────────────────────
   cameraPicker = new CameraPicker(tracker, () => {
     scene.setupARBackground(tracker.getVideoElement())
     isFrontCam = tracker.isFront()
   })
   document.getElementById('camera-btn')?.addEventListener('click', () => cameraPicker!.toggle())
 
-  // ─── Стерео / CalibrationPanel ────────────────────────────────────────────
   function ensureCalibPanel(): void {
     if (!calibPanel) {
       const sr = scene.getStereoRenderer()
       if (!sr) return
-      calibPanel = new CalibrationPanel(sr, (mode) => { handMode = mode })
+      calibPanel = new CalibrationPanel(sr, mode => { handMode = mode })
     }
   }
 
@@ -211,7 +219,6 @@ async function main(): Promise<void> {
     else    { try { (screen.orientation as any)?.unlock() } catch {} }
   }
 
-  // ─── Автообновление ───────────────────────────────────────────────────────
   const updater = new AutoUpdater(GITHUB_OWNER, GITHUB_REPO, APP_VERSION)
   updater.startAutoCheck(rel => {
     updateBanner.classList.add('show')
@@ -221,20 +228,6 @@ async function main(): Promise<void> {
   dismissBtn.addEventListener('click', () => updateBanner.classList.remove('show'))
 }
 
-// ─── Утилиты ──────────────────────────────────────────────────────────────────
-
-/**
- * Конвертация ланд-марка MediaPipe → мировые 3D координаты
- *
- * Задняя камера (selfieMode=false):
- *   MediaPipe даёт X: 0=лево кадра, 1=право кадра.
- *   НЕ зеркалируем → ndcX = x*2-1
- *
- * Фронтальная (selfieMode=true):
- *   MediaPipe зеркалирует X внутри → ndcX = (1-x)*2-1
- *
- * Y: image 0=верх, 1=низ → NDC 1=верх, -1=низ → -(y*2-1)
- */
 function landmarkToWorld(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: boolean): THREE.Vector3 {
   const ndcX = isFront ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
   const ndcY = -(lm.y * 2 - 1)
@@ -246,8 +239,7 @@ function landmarkToWorld(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: bo
 function spawnParticles(scene: THREE.Scene): void {
   const count = 50
   const geo = new THREE.BufferGeometry()
-  const pos = new Float32Array(count * 3)
-  const col = new Float32Array(count * 3)
+  const pos = new Float32Array(count * 3); const col = new Float32Array(count * 3)
   for (let i = 0; i < count; i++) {
     pos[i*3]=(Math.random()-.5)*3; pos[i*3+1]=(Math.random()-.5)*3; pos[i*3+2]=-2-Math.random()*2
     col[i*3]=Math.random(); col[i*3+1]=Math.random()*.5; col[i*3+2]=1
@@ -255,29 +247,17 @@ function spawnParticles(scene: THREE.Scene): void {
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
   geo.setAttribute('color',    new THREE.BufferAttribute(col, 3))
   const mat = new THREE.PointsMaterial({ size: 0.06, vertexColors: true, transparent: true })
-  const pts = new THREE.Points(geo, mat)
-  scene.add(pts)
+  const pts = new THREE.Points(geo, mat); scene.add(pts)
   let life = 1.0
-  const tick = () => {
-    life -= 0.015; mat.opacity = life
-    if (life > 0) requestAnimationFrame(tick)
-    else { scene.remove(pts); geo.dispose(); mat.dispose() }
-  }
+  const tick = () => { life -= 0.015; mat.opacity = life; if (life > 0) requestAnimationFrame(tick); else { scene.remove(pts); geo.dispose(); mat.dispose() } }
   tick()
 }
 
 function showToast(msg: string, dur = 3000): void {
   const t = document.createElement('div')
   t.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:rgba(13,17,23,.95);color:#e6edf3;padding:12px 20px;border-radius:12px;font-family:-apple-system,sans-serif;font-size:.85rem;z-index:9000;border:1px solid rgba(99,102,241,.4);backdrop-filter:blur(12px);max-width:90vw;text-align:center;'
-  t.textContent = msg
-  document.body.appendChild(t)
-  setTimeout(() => t.remove(), dur)
+  t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), dur)
 }
 
 declare const __APP_VERSION__: string
-
-main().catch(err => {
-  console.error('Fatal:', err)
-  const sub = document.querySelector('.loader-sub') as HTMLElement
-  if (sub) { sub.textContent = `❌ ${err.message}`; sub.style.color = '#f87171' }
-})
+main().catch(err => { console.error('Fatal:', err) })

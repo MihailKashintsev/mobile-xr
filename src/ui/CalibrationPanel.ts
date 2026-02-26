@@ -1,35 +1,30 @@
-/**
- * CalibrationPanel — настройка VR
- * - Убран portrait lock (вызывал "третье окно")
- * - Добавлен Samsung Gear VR 2
- * - Добавлен переключатель режима рук
- */
-
 import type { StereoRenderer, StereoCalibration } from '../xr/StereoRenderer'
 import { DEFAULT_CALIBRATION } from '../xr/StereoRenderer'
 
 interface SliderDef {
-  key:   keyof StereoCalibration
+  key: keyof StereoCalibration
   label: string; min: number; max: number; step: number; unit: string; hint: string
 }
 
 const SLIDERS: SliderDef[] = [
-  { key:'ipd',            label:'Межзрачковое (IPD)',     min:50,   max:80,  step:0.5,  unit:'мм', hint:'Расстояние между зрачками. Среднее — 63 мм.' },
-  { key:'fov',            label:'Поле зрения (FOV)',       min:60,   max:130, step:1,    unit:'°',  hint:'Угол обзора камер. Зависит от линз.' },
-  { key:'lensDistance',   label:'Центр линзы (Y)',         min:0.1,  max:0.9, step:0.01, unit:'',   hint:'Вертикальный центр оптической дисторсии.' },
-  { key:'k1',             label:'Дисторсия K1',            min:0,    max:0.8, step:0.01, unit:'',   hint:'Основная бочкообразная коррекция линзы.' },
-  { key:'k2',             label:'Дисторсия K2',            min:0,    max:0.5, step:0.01, unit:'',   hint:'Вторичная коррекция — тонкая настройка.' },
-  { key:'verticalOffset', label:'Вертикальный сдвиг',      min:-0.1, max:0.1, step:0.005,unit:'',   hint:'Если изображение плывёт вверх/вниз.' },
-  { key:'zoom',           label:'Масштаб',                 min:0.6,  max:1.5, step:0.01, unit:'x',  hint:'Увеличение/уменьшение изображения.' },
+  { key:'ipd',            label:'Межзрачковое (IPD)',      min:50,   max:80,   step:0.5,  unit:'мм', hint:'Расстояние между зрачками. Среднее — 63 мм.' },
+  { key:'fov',            label:'Поле зрения (FOV)',        min:60,   max:130,  step:1,    unit:'°',  hint:'Угол обзора камер. Зависит от линз.' },
+  { key:'lensDistance',   label:'Центр линзы (Y)',          min:0.1,  max:0.9,  step:0.01, unit:'',   hint:'Вертикальный центр оптической дисторсии.' },
+  { key:'k1',             label:'Дисторсия K1',             min:0,    max:0.8,  step:0.01, unit:'',   hint:'Основная бочкообразная коррекция линзы.' },
+  { key:'k2',             label:'Дисторсия K2',             min:0,    max:0.5,  step:0.01, unit:'',   hint:'Вторичная коррекция — тонкая настройка.' },
+  { key:'verticalOffset', label:'Вертикальный сдвиг',       min:-0.1, max:0.1,  step:0.005,unit:'',   hint:'Если изображение плывёт вверх/вниз.' },
+  { key:'zoom',           label:'Масштаб',                  min:0.6,  max:1.5,  step:0.01, unit:'x',  hint:'Увеличение/уменьшение изображения.' },
+  { key:'eyeShiftL',      label:'⬅ Сдвиг левого глаза',    min:-0.15,max:0.15, step:0.005,unit:'',   hint:'Горизонтальный сдвиг картинки левого глаза.' },
+  { key:'eyeShiftR',      label:'Сдвиг правого глаза ➡',   min:-0.15,max:0.15, step:0.005,unit:'',   hint:'Горизонтальный сдвиг картинки правого глаза.' },
 ]
 
 const PRESETS: Record<string, Partial<StereoCalibration> & { name: string }> = {
-  generic:    { name:'📦 Cardboard (обычный)', ipd:63,  fov:90,  k1:0.22, k2:0.10, zoom:1.0,  lensDistance:0.5,  verticalOffset:0 },
-  gear_vr2:   { name:'🌌 Samsung Gear VR 2',  ipd:64,  fov:101, k1:0.34, k2:0.13, zoom:0.98, lensDistance:0.48, verticalOffset:0 },
-  vr_box:     { name:'🥽 VR BOX',             ipd:63,  fov:96,  k1:0.30, k2:0.15, zoom:0.95, lensDistance:0.45, verticalOffset:0 },
-  shinecon:   { name:'🎮 Shinecon',           ipd:64,  fov:100, k1:0.18, k2:0.08, zoom:1.0,  lensDistance:0.5,  verticalOffset:0 },
-  cardboard_v2:{ name:'📎 Cardboard v2',      ipd:60,  fov:80,  k1:0.22, k2:0.10, zoom:1.0,  lensDistance:0.48, verticalOffset:0 },
-  flat:       { name:'⬛ Без дисторсии',      ipd:63,  fov:90,  k1:0,    k2:0,    zoom:1.0,  lensDistance:0.5,  verticalOffset:0 },
+  generic:    { name:'📦 Cardboard',        ipd:63, fov:90,  k1:0.22, k2:0.10, zoom:1.0,  lensDistance:0.5,  verticalOffset:0, eyeShiftL:0, eyeShiftR:0 },
+  gear_vr2:   { name:'🌌 Samsung Gear VR 2',ipd:64, fov:101, k1:0.34, k2:0.13, zoom:0.98, lensDistance:0.48, verticalOffset:0, eyeShiftL:0, eyeShiftR:0 },
+  vr_box:     { name:'🥽 VR BOX',           ipd:63, fov:96,  k1:0.30, k2:0.15, zoom:0.95, lensDistance:0.45, verticalOffset:0, eyeShiftL:0, eyeShiftR:0 },
+  shinecon:   { name:'🎮 Shinecon',         ipd:64, fov:100, k1:0.18, k2:0.08, zoom:1.0,  lensDistance:0.5,  verticalOffset:0, eyeShiftL:0, eyeShiftR:0 },
+  cardboard_v2:{name:'📎 Cardboard v2',     ipd:60, fov:80,  k1:0.22, k2:0.10, zoom:1.0,  lensDistance:0.48, verticalOffset:0, eyeShiftL:0, eyeShiftR:0 },
+  flat:       { name:'⬛ Без дисторсии',    ipd:63, fov:90,  k1:0,    k2:0,    zoom:1.0,  lensDistance:0.5,  verticalOffset:0, eyeShiftL:0, eyeShiftR:0 },
 }
 
 export type HandRenderMode = 'skeleton' | '3d'
@@ -40,17 +35,14 @@ export class CalibrationPanel {
   private visible = false
   private sliderEls: Map<keyof StereoCalibration, HTMLInputElement> = new Map()
   private valueEls:  Map<keyof StereoCalibration, HTMLSpanElement>  = new Map()
+  private onHandModeChange?: (m: HandRenderMode) => void
 
-  private handMode: HandRenderMode = 'skeleton'
-  private onHandModeChange?: (mode: HandRenderMode) => void
-
-  constructor(stereo: StereoRenderer, onHandMode?: (mode: HandRenderMode) => void) {
+  constructor(stereo: StereoRenderer, onHandMode?: (m: HandRenderMode) => void) {
     this.stereo = stereo
     this.onHandModeChange = onHandMode
     this.container = document.createElement('div')
     this.container.id = 'calib-panel'
-    this.buildCSS()
-    this.buildHTML()
+    this.buildCSS(); this.buildHTML()
     document.body.appendChild(this.container)
   }
 
@@ -58,15 +50,9 @@ export class CalibrationPanel {
     this.visible = true
     this.container.classList.add('open')
     this.syncSlidersFromCalib()
-    // НЕ блокируем ориентацию — иначе появлялся portrait-lock overlay
   }
 
-  close(): void {
-    this.visible = false
-    this.container.classList.remove('open')
-    // НЕ unlock — пусть VR режим сам управляет ориентацией
-  }
-
+  close(): void { this.visible = false; this.container.classList.remove('open') }
   toggle(): void { this.visible ? this.close() : this.open() }
   isOpen(): boolean { return this.visible }
 
@@ -95,16 +81,14 @@ export class CalibrationPanel {
           <button class="calib-btn calib-btn-reset" id="calib-reset-btn">↺ Сброс</button>
           <button class="calib-btn calib-btn-apply" id="calib-apply-btn">✓ Готово</button>
         </div>
-        <div class="calib-tip">💡 Надень очки и регулируй пока не пропадёт двоение</div>
+        <div class="calib-tip">💡 Надень очки — регулируй пока не пропадёт двоение</div>
       </div>
     `
 
-    // Пресеты
     const grid = this.container.querySelector('#preset-grid')!
-    for (const [id, preset] of Object.entries(PRESETS)) {
+    for (const [id, p] of Object.entries(PRESETS)) {
       const btn = document.createElement('button')
-      btn.className = 'preset-btn'
-      btn.textContent = preset.name
+      btn.className = 'preset-btn'; btn.textContent = p.name
       btn.addEventListener('click', () => {
         this.applyPreset(id)
         grid.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'))
@@ -113,19 +97,16 @@ export class CalibrationPanel {
       grid.appendChild(btn)
     }
 
-    // Переключатель режима рук
     const modeRow = this.container.querySelector('#hand-mode-row')!
     modeRow.querySelectorAll('.hand-mode-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const mode = (btn as HTMLElement).dataset.mode as HandRenderMode
-        this.handMode = mode
         modeRow.querySelectorAll('.hand-mode-btn').forEach(b => b.classList.remove('active'))
         btn.classList.add('active')
         this.onHandModeChange?.(mode)
       })
     })
 
-    // Слайдеры
     const list = this.container.querySelector('#sliders-list')!
     const calib = this.stereo.getCalibration()
     for (const def of SLIDERS) {
@@ -143,22 +124,19 @@ export class CalibrationPanel {
         <div class="slider-hint">${def.hint}</div>
       `
       list.appendChild(row)
-      const input   = row.querySelector(`#sl-${def.key}`)   as HTMLInputElement
-      const valueEl = row.querySelector(`#val-${def.key}`) as HTMLSpanElement
-      this.sliderEls.set(def.key, input)
-      this.valueEls.set(def.key, valueEl)
+      const input = row.querySelector(`#sl-${def.key}`) as HTMLInputElement
+      const vel   = row.querySelector(`#val-${def.key}`) as HTMLSpanElement
+      this.sliderEls.set(def.key, input); this.valueEls.set(def.key, vel)
       input.addEventListener('input', () => {
-        const num = parseFloat(input.value)
-        valueEl.textContent = `${num.toFixed(dp)}${def.unit}`
-        this.stereo.setCalibration({ [def.key]: num } as Partial<StereoCalibration>)
+        const n = parseFloat(input.value)
+        vel.textContent = `${n.toFixed(dp)}${def.unit}`
+        this.stereo.setCalibration({ [def.key]: n } as Partial<StereoCalibration>)
       })
     }
 
     this.container.querySelector('#calib-close-btn')!.addEventListener('click',  () => this.close())
     this.container.querySelector('.calib-backdrop')!.addEventListener('click',   () => this.close())
-    this.container.querySelector('#calib-reset-btn')!.addEventListener('click',  () => {
-      this.stereo.resetCalibration(); this.syncSlidersFromCalib()
-    })
+    this.container.querySelector('#calib-reset-btn')!.addEventListener('click',  () => { this.stereo.resetCalibration(); this.syncSlidersFromCalib() })
     this.container.querySelector('#calib-apply-btn')!.addEventListener('click',  () => this.close())
   }
 
@@ -171,13 +149,12 @@ export class CalibrationPanel {
   private syncSlidersFromCalib(): void {
     const calib = this.stereo.getCalibration()
     for (const def of SLIDERS) {
-      const input   = this.sliderEls.get(def.key)
-      const valueEl = this.valueEls.get(def.key)
-      if (!input || !valueEl) continue
-      const num = calib[def.key] as number
-      const dp  = def.step < 0.01 ? 3 : def.step < 0.1 ? 2 : 1
-      input.value        = String(num)
-      valueEl.textContent = `${num.toFixed(dp)}${def.unit}`
+      const input = this.sliderEls.get(def.key)
+      const vel   = this.valueEls.get(def.key)
+      if (!input || !vel) continue
+      const n  = calib[def.key] as number
+      const dp = def.step < 0.01 ? 3 : def.step < 0.1 ? 2 : 1
+      input.value = String(n); vel.textContent = `${n.toFixed(dp)}${def.unit}`
     }
   }
 
