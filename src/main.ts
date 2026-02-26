@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   leftMesh.addToScene(scene.scene);    rightMesh.addToScene(scene.scene)
   leftCursor.setVisible(false);        rightCursor.setVisible(false)
   leftMesh.setVisible(false);          rightMesh.setVisible(false)
-  settings.onHandMode=(m)=>{ handMode=m }
+  settings.onHandMode=(m: HandRenderMode)=>{ handMode=m }
 
   // ─── App windows ──────────────────────────────────────────────────────────
   let cameraApp: CameraApp | null = null
@@ -158,7 +158,8 @@ async function main(): Promise<void> {
         for (let hi=0;hi<2;hi++) {
           const ndc=fingerNDC[hi],g=[leftG,rightG][hi]
           if (!ndc||!g||g.pinchStrength<0.80) continue
-          const cam=(stereoActive&&scene.getStereoRenderer()?.camL)??scene.camera
+          const sr = stereoActive ? scene.getStereoRenderer() : undefined
+          const cam: THREE.PerspectiveCamera = sr?.camL ?? scene.camera
           const dir=new THREE.Vector3(ndc.ndcX,ndc.ndcY,0.5).unproject(cam).sub(cam.position).normalize()
           const pt=cam.position.clone().addScaledVector(dir,0.65)
           const hit=taskbar.hitTest(pt)

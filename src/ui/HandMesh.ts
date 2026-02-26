@@ -69,7 +69,7 @@ export class HandMesh {
   // Суставные сферы
   private joints: THREE.Mesh[] = []
   // Ладонь как mesh (обновляется каждый кадр)
-  private palmMesh: THREE.Mesh
+  private palmMesh!: THREE.Mesh
   // Перемычки (webbing) между пальцами
   private webs: THREE.Mesh[] = []
   // Ногти
