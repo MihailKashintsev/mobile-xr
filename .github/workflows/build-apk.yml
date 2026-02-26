@@ -22,102 +22,220 @@ jobs:
       - name: Install SDK
         run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Install Bubblewrap
-        run: npm install -g @bubblewrap/cli@latest
-
-      - name: Configure Bubblewrap (skip interactive JDK prompt)
-        run: |
-          mkdir -p ~/.bubblewrap
-          cat > ~/.bubblewrap/config.json << JSON
-          {
-            "jdkPath": "$JAVA_HOME",
-            "androidSdkPath": "$ANDROID_SDK_ROOT"
-          }
-          JSON
-          cat ~/.bubblewrap/config.json
-
       - name: Create keystore
         run: |
           keytool -genkeypair -v \
-            -keystore keystore.jks -alias mobile-xr \
+            -keystore $GITHUB_WORKSPACE/keystore.jks -alias mobile-xr \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass android -keypass android \
-            -dname "CN=MobileXR,O=Dev,C=US" 2>&1
+            -dname "CN=MobileXR,O=Dev,C=US"
 
-      - name: Create twa-manifest.json
+      # Bubblewrap init всегда задаёт вопросы.
+      # Решение: строим Android-проект напрямую через Gradle + TWA Library,
+      # полностью обходя bubblewrap init.
+      - name: Create TWA Android project manually
         run: |
-          mkdir apk-build
-          cat > apk-build/twa-manifest.json << 'JSON'
-          {
-            "packageId": "io.github.mihailkashintsev.mobilexr",
-            "host": "mihailkashintsev.github.io",
-            "name": "Mobile XR",
-            "launcherName": "Mobile XR",
-            "display": "fullscreen",
-            "orientation": "landscape",
-            "themeColor": "#0a0a1a",
-            "navigationColor": "#0a0a1a",
-            "navigationColorDark": "#0a0a1a",
-            "navigationDividerColor": "#0a0a1a",
-            "navigationDividerColorDark": "#0a0a1a",
-            "backgroundColor": "#0a0a1a",
-            "enableNotifications": false,
-            "startUrl": "/mobile-xr/",
-            "iconUrl": "https://mihailkashintsev.github.io/mobile-xr/icons/icon-512.png",
-            "maskableIconUrl": "https://mihailkashintsev.github.io/mobile-xr/icons/icon-512.png",
-            "monochromeIconUrl": "",
-            "shortcuts": [],
-            "generatorApp": "bubblewrap-cli",
-            "webManifestUrl": "https://mihailkashintsev.github.io/mobile-xr/manifest.webmanifest",
-            "isChromeOSOnly": false,
-            "isMetaQuest": false,
-            "minSdkVersion": 21,
-            "signingKey": {
-              "path": "../keystore.jks",
-              "alias": "mobile-xr"
-            },
-            "appVersionCode": 1,
-            "appVersion": "1.0.0",
-            "features": {},
-            "alphaDependencies": { "enabled": false },
-            "enableSiteSettingsShortcut": false,
-            "isSplashScreenEnabled": true,
-            "splashScreenFadeOutDuration": 300,
-            "splashScreenTheme": "SplashScreenTheme",
-            "darkLauncherIconUrl": "",
-            "serviceAccountJsonFile": ""
+          mkdir -p apk-build
+          cd apk-build
+
+          # settings.gradle
+          cat > settings.gradle << 'GRADLE'
+          include ':app'
+          dependencyResolutionManagement {
+            repositories {
+              google()
+              mavenCentral()
+            }
           }
-          JSON
+          GRADLE
 
-      - name: Generate TWA project from manifest (non-interactive)
-        working-directory: apk-build
-        run: |
-          # bubblewrap generate читает twa-manifest.json и создаёт Android проект без вопросов
-          bubblewrap generate --jdkPath "$JAVA_HOME" --androidSdkPath "$ANDROID_SDK_ROOT"
+          # build.gradle (project)
+          cat > build.gradle << 'GRADLE'
+          buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies {
+              classpath 'com.android.tools.build:gradle:8.2.2'
+            }
+          }
+          GRADLE
+
+          # gradle wrapper
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties << 'PROPS'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          PROPS
+
+          # Download gradle wrapper jar
+          curl -sL https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar \
+            -o gradle/wrapper/gradle-wrapper.jar
+
+          cat > gradlew << 'SH'
+          #!/bin/sh
+          exec java -jar "$(dirname "$0")/gradle/wrapper/gradle-wrapper.jar" "$@"
+          SH
+          chmod +x gradlew
+
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-hdpi
+
+          # app/build.gradle
+          cat > app/build.gradle << 'GRADLE'
+          plugins {
+            id 'com.android.application'
+          }
+          android {
+            namespace 'io.github.mihailkashintsev.mobilexr'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'io.github.mihailkashintsev.mobilexr'
+              minSdk 21
+              targetSdk 34
+              versionCode 1
+              versionName '1.0.0'
+            }
+            buildTypes {
+              release {
+                minifyEnabled false
+                signingConfig signingConfigs.debug
+              }
+            }
+            signingConfigs {
+              debug {
+                storeFile file('../../keystore.jks')
+                storePassword 'android'
+                keyAlias 'mobile-xr'
+                keyPassword 'android'
+              }
+            }
+          }
+          dependencies {
+            implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+          }
+          GRADLE
+
+          # AndroidManifest.xml
+          cat > app/src/main/AndroidManifest.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-permission android:name="android.permission.CAMERA"/>
+            <application
+              android:label="Mobile XR"
+              android:icon="@mipmap/ic_launcher"
+              android:theme="@style/AppTheme"
+              android:allowBackup="true">
+              <activity
+                android:name="com.google.androidbrowserhelper.trusted.LauncherActivity"
+                android:exported="true"
+                android:screenOrientation="landscape">
+                <meta-data
+                  android:name="android.support.customtabs.trusted.DEFAULT_URL"
+                  android:value="https://mihailkashintsev.github.io/mobile-xr/"/>
+                <meta-data
+                  android:name="android.support.customtabs.trusted.STATUS_BAR_COLOR"
+                  android:resource="@color/colorPrimary"/>
+                <meta-data
+                  android:name="android.support.customtabs.trusted.SPLASH_IMAGE_DRAWABLE"
+                  android:resource="@drawable/splash"/>
+                <meta-data
+                  android:name="android.support.customtabs.trusted.SPLASH_SCREEN_BACKGROUND_COLOR"
+                  android:resource="@color/backgroundColor"/>
+                <meta-data
+                  android:name="android.support.customtabs.trusted.SPLASH_SCREEN_FADE_OUT_DURATION"
+                  android:value="300"/>
+                <meta-data
+                  android:name="android.support.customtabs.trusted.FILE_PROVIDER_AUTHORITY"
+                  android:value="io.github.mihailkashintsev.mobilexr.fileprovider"/>
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+                <intent-filter android:autoVerify="true">
+                  <action android:name="android.intent.action.VIEW"/>
+                  <category android:name="android.intent.category.DEFAULT"/>
+                  <category android:name="android.intent.category.BROWSABLE"/>
+                  <data android:scheme="https"
+                        android:host="mihailkashintsev.github.io"
+                        android:pathPrefix="/mobile-xr/"/>
+                </intent-filter>
+              </activity>
+              <provider
+                android:name="androidx.core.content.FileProvider"
+                android:authorities="io.github.mihailkashintsev.mobilexr.fileprovider"
+                android:exported="false"
+                android:grantUriPermissions="true">
+                <meta-data
+                  android:name="android.support.FILE_PROVIDER_PATHS"
+                  android:resource="@xml/filepaths"/>
+              </provider>
+            </application>
+          </manifest>
+          XML
+
+          cat > app/src/main/res/values/colors.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <color name="colorPrimary">#0a0a1a</color>
+            <color name="backgroundColor">#0a0a1a</color>
+          </resources>
+          XML
+
+          cat > app/src/main/res/values/styles.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+              <item name="android:windowBackground">@color/backgroundColor</item>
+            </style>
+          </resources>
+          XML
+
+          cat > app/src/main/res/xml/filepaths.xml << 'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths><external-path name="external_files" path="."/></paths>
+          XML
+
+          # Простая иконка (нужна хоть какая-то)
+          python3 -c "
+          import struct, zlib
+          def png1x1(r,g,b):
+            def chunk(t,d): crc=zlib.crc32(t+d)&0xffffffff; return struct.pack('>I',len(d))+t+d+struct.pack('>I',crc)
+            ihdr=struct.pack('>IIBBBBB',48,48,8,2,0,0,0)
+            row=b'\\x00'+bytes([r,g,b]*48)
+            raw=row*48
+            idat=zlib.compress(raw)
+            return b'\\x89PNG\\r\\n\\x1a\\n'+chunk(b'IHDR',ihdr)+chunk(b'IDAT',idat)+chunk(b'IEND',b'')
+          open('app/src/main/res/mipmap-hdpi/ic_launcher.png','wb').write(png1x1(10,10,26))
+          open('app/src/main/res/drawable/splash.png','wb').write(png1x1(10,10,26))
+          "
 
       - name: Build APK
         working-directory: apk-build
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
         run: |
-          bubblewrap build \
-            --skipPwaValidation \
-            --jdkPath "$JAVA_HOME" \
-            --androidSdkPath "$ANDROID_SDK_ROOT" \
-            2>&1
+          # Gradle wrapper требует отдельной загрузки
+          curl -sL "https://services.gradle.org/distributions/gradle-8.4-bin.zip" \
+            -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp/
+          export PATH="/tmp/gradle-8.4/bin:$PATH"
+          gradle wrapper --gradle-version 8.4 2>/dev/null || true
+          ./gradlew assembleRelease --no-daemon -Pandroid.suppressUnsupportedCompileSdk=34 2>&1
 
-      - name: Find & stage APK
+      - name: Find & upload APK
         run: |
-          APK=$(find apk-build -name "*.apk" | grep -v unaligned | head -1)
-          echo "Found APK: $APK"
-          if [ -n "$APK" ]; then
-            cp "$APK" mobile-xr.apk
-          else
-            find apk-build -name "*.apk" | head -5
-            exit 1
-          fi
+          APK=$(find apk-build -name "*release*.apk" -o -name "*debug*.apk" | head -1)
+          echo "APK: $APK"
+          [ -n "$APK" ] && cp "$APK" mobile-xr.apk || (echo "no apk"; ls -la apk-build/app/build/outputs/ 2>/dev/null; exit 1)
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: mobile-xr-android-apk
+          name: mobile-xr-android
           path: mobile-xr.apk
           retention-days: 30
