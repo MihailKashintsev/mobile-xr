@@ -228,6 +228,39 @@ export class XRWindow {
     this.group.userData.fY=nextY
   }
 
+  /**
+   * Заменить кнопки динамически (используется TaskBar3D при setActive)
+   * Удаляет старые mesh кнопок и создаёт новые
+   */
+  replaceButtons(btns:WinButton[]):void{
+    // Удалить старые кнопки
+    for(const{mesh}of this.btnEntries){
+      this.group.remove(mesh)
+      mesh.geometry.dispose()
+      ;(mesh.material as THREE.MeshPhysicalMaterial).dispose()
+    }
+    this.btnEntries=[]
+    // Добавить новые
+    const{W,H}=this
+    const cols=btns.length<=1?1:btns.length<=4?btns.length:Math.ceil(btns.length/2)
+    const pad=.042,btnW=btns.length<=4?(W-pad*2-pad*(btns.length-1))/btns.length:(W-pad*3)/2
+    const top=H/2-TH-pad,bot=-H/2+BRH+pad
+    const rows=Math.ceil(btns.length/cols),gap=.028
+    const btnH=Math.min(.160,(top-bot-gap*(rows-1))/rows)
+    btns.forEach((btn,i)=>{
+      const col=i%cols,row=Math.floor(i/cols)
+      let x:number
+      if(cols===1)x=0
+      else if(cols===btns.length){x=-W/2+pad+col*(btnW+pad)+btnW/2}
+      else x=col===0?-(btnW/2+pad/2):(btnW/2+pad/2)
+      const y=top-row*(btnH+gap)-btnH/2
+      const mesh=new THREE.Mesh(new THREE.BoxGeometry(btnW,btnH,BTN_D),
+        new THREE.MeshPhysicalMaterial({map:btnTex(btn.label,btn.color??0x6366f1),transparent:true,opacity:.95,roughness:.12}))
+      mesh.position.set(x,y,PD/2+BTN_D/2);this.group.add(mesh)
+      this.btnEntries.push({mesh,btn})
+    })
+  }
+
   addTo(s:THREE.Scene):void{s.add(this.group)}
   removeFrom(s:THREE.Scene):void{s.remove(this.group)}
 }
@@ -332,4 +365,15 @@ export class WindowManager{
   }
 
   getWindows():XRWindow[]{return this.wins}
+
+  /** Скрыть все окна кроме исключённых */
+  hideAll(except?:XRWindow[]):void{
+    for(const w of this.wins){
+      if(except&&except.includes(w))continue
+      w.group.visible=false
+    }
+  }
+
+  /** Показать все окна */
+  showAll():void{for(const w of this.wins)w.group.visible=true}
 }

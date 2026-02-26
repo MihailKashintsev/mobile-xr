@@ -7,7 +7,8 @@ import { HandCursor }     from './ui/HandCursor'
 import { HandMesh }       from './ui/HandMesh'
 import { TaskBar3D }      from './ui/TaskBar3D'
 import { SettingsWindow } from './ui/SettingsWindow'
-import type { HandRenderMode } from './ui/SettingsWindow'
+import { SettingsXRWindow } from './ui/SettingsXRWindow'
+import type { HandRenderMode } from './ui/SettingsXRWindow'
 import { VRRoom }         from './ui/VRRoom'
 import { CameraApp }      from './ui/CameraApp'
 import { PinchParticles } from './ui/PinchParticles'
@@ -43,12 +44,13 @@ async function main(): Promise<void> {
   setProgress(10,'Инициализация 3D...')
   const appEl  = document.getElementById('app')!
   const scene  = new SceneManager(appEl)
-  const winMgr = new WindowManager(scene.scene, scene.camera)
-  const taskbar= new TaskBar3D()
-  const settings=new SettingsWindow()
-  const vrRoom = new VRRoom()
+  const winMgr   = new WindowManager(scene.scene, scene.camera)
+  const taskbar  = new TaskBar3D()
+  const settingsHtml = new SettingsWindow()   // HTML-настройки для VR-калибровки
+  const settingsXR   = new SettingsXRWindow() // XR 3D окно настроек (режим руки + цвет)
+  const vrRoom   = new VRRoom()
   const particles = new PinchParticles(scene.scene)
-  settings.version = APP_VERSION
+  settingsHtml.version = APP_VERSION
 
   // Освещение
   scene.scene.add(new THREE.AmbientLight(0xffffff,0.45))
@@ -57,7 +59,8 @@ async function main(): Promise<void> {
   vrRoom.addToScene(scene.scene)
   taskbar.addToScene(scene.scene)
   const cg = new ColorGrading(scene.renderer.domElement)
-  settings.setColorGrading(cg)
+  settingsHtml.setColorGrading(cg)
+  settingsXR.setColorGrading(cg)
 
   // ─── Руки ─────────────────────────────────────────────────────────────────
   let handMode: HandRenderMode = 'skeleton'
@@ -67,7 +70,11 @@ async function main(): Promise<void> {
   leftMesh.addToScene(scene.scene);    rightMesh.addToScene(scene.scene)
   leftCursor.setVisible(false);        rightCursor.setVisible(false)
   leftMesh.setVisible(false);          rightMesh.setVisible(false)
-  settings.onHandMode=(m: HandRenderMode)=>{ handMode=m }
+  settingsHtml.onHandMode=(m: HandRenderMode)=>{ handMode=m }
+  settingsXR.onHandMode =(m: HandRenderMode)=>{ handMode=m }
+
+  // Добавляем XR окно настроек в WindowManager
+  winMgr.add(settingsXR.window)
 
   // ─── App windows ──────────────────────────────────────────────────────────
   let cameraApp: CameraApp | null = null
@@ -96,7 +103,7 @@ async function main(): Promise<void> {
     taskbar.setActive('📷',true)
   }
 
-  // VR Room window (toggle)
+  // VR Room (toggle)
   function toggleRoom(): void {
     const on=!vrRoom.isVisible(); vrRoom.setVisible(on)
     taskbar.setActive('🏠',on)
@@ -110,7 +117,7 @@ async function main(): Promise<void> {
     stereoToggle.textContent=stereoActive?'⚙️ Калибровка':'👓 VR'
     if (stereoActive) {
       const sr=scene.getStereoRenderer()!
-      settings.setStereo(sr); winMgr.setStereoCamera(sr.camL)
+      settingsHtml.setStereo(sr); winMgr.setStereoCamera(sr.camL)
       try{(screen.orientation as any)?.lock('landscape')}catch{}
     } else {
       winMgr.setStereoCamera(null)
@@ -118,18 +125,31 @@ async function main(): Promise<void> {
     }
   }
 
-  // Settings
-  function openSettings(): void {
-    settings.toggle(); taskbar.setActive('⚙️',settings.isOpen())
+  // XR Настройки (3D окно рукой)
+  function openSettingsXR(): void {
+    settingsXR.toggle()
+    taskbar.setActive('⚙️', settingsXR.isOpen())
   }
 
-  // ─── Taskbar buttons ──────────────────────────────────────────────────────
+  // Закрыть все окна (кроме тасктбара)
+  function closeAllWindows(): void {
+    winMgr.hideAll([settingsXR.window, taskbar.window])
+    if (cameraApp) { cameraApp.window.group.visible = false; taskbar.setActive('📷',false) }
+    settingsXR.close();  taskbar.setActive('⚙️',false)
+    vrRoom.setVisible(false); taskbar.setActive('🏠',false)
+    toast('✕ Все окна закрыты')
+  }
+
+  // ─── Taskbar кнопки (нажимаются рукой!) ──────────────────────────────────
   taskbar.setButtons([
-    { icon:'⚙️', label:'Настройки', onClick: openSettings },
-    { icon:'📷', label:'Камера',    onClick: openCamera   },
-    { icon:'🏠', label:'Комната',   onClick: toggleRoom   },
-    { icon:'👓', label:'VR',        onClick: toggleVR     },
+    { label: '⚙️ Настройки', onClick: openSettingsXR },
+    { label: '📷 Камера',    onClick: openCamera      },
+    { label: '🏠 Комната',   onClick: toggleRoom      },
+    { label: '👓 VR',        onClick: toggleVR        },
+    { label: '✕✕ Закрыть',  onClick: closeAllWindows },
   ])
+  // Тасктбар всегда в WindowManager (не удаляется!)
+  winMgr.add(taskbar.window)
 
   // ─── State ────────────────────────────────────────────────────────────────
   let leftG:  GestureResult|null=null, rightG: GestureResult|null=null
@@ -237,8 +257,8 @@ async function main(): Promise<void> {
       rightDot.classList.toggle('active',!!rightG)
     })
 
-    settings.setTracker(tracker)
-    settings.onSwitchCamera=()=>{
+    settingsHtml.setTracker(tracker)
+    settingsHtml.onSwitchCamera=()=>{
       scene.setupARBackground(tracker.getVideoElement())
       ;(cameraApp as CameraApp|null)?.setVideo(tracker.getVideoElement())
     }
@@ -254,7 +274,7 @@ async function main(): Promise<void> {
   }
 
   // stereo btn
-  stereoToggle.addEventListener('click',()=>stereoActive?openSettings():toggleVR())
+  stereoToggle.addEventListener('click',()=>stereoActive?settingsHtml.toggle():toggleVR())
 
   // ─── Auto updater ─────────────────────────────────────────────────────────
   const updater=new AutoUpdater('MihailKashintsev','mobile-xr',APP_VERSION)
