@@ -74,11 +74,17 @@ export class StereoRenderer {
     const sz=new THREE.Vector2(); this.r.getSize(sz)
     const CW=sz.x,CH=sz.y,CHW=CW>>1
 
-    // Рендер в RT — outputColorSpace НЕ МЕНЯЕМ (остаётся SRGBColorSpace)
+    // ФИКС ДВОЙНОЙ ГАММЫ В VR:
+    // Рендерим в RT с LINEAR colorspace → данные в RT линейные
+    // ShaderMaterial читает их как линейные, выводит на sRGB канвас через outputColorSpace
+    const savedCS = this.r.outputColorSpace
+    this.r.outputColorSpace = THREE.LinearSRGBColorSpace  // рендер в RT без гаммы
     for (const [rt,bg,cam] of [[this.rtL,this.bgL,this.camL],[this.rtR,this.bgR,this.camR]] as any[]) {
       this.r.setRenderTarget(rt);this.r.autoClear=true;this.r.clear();this.r.autoClear=false
       this.r.render(bg,this.bgCam);this.r.render(scene,cam)
     }
+    this.r.outputColorSpace = savedCS  // восстанавливаем для quad-вывода
+
     // Вывод quad-ов на экран
     this.r.setRenderTarget(null);this.r.autoClear=true;this.r.clear();this.r.autoClear=false
     this.r.setScissorTest(true)

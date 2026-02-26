@@ -161,29 +161,24 @@ async function main(): Promise<void> {
 
     if (handsReady) {
       winMgr.update(time,[leftG,rightG],fingerNDC,fingerWorld)
-      taskbarCD=Math.max(0,taskbarCD-1)
-      if (taskbarCD===0) {
-        for (let hi=0;hi<2;hi++) {
-          const g=[leftG,rightG][hi]
-          const fw=fingerWorld[hi]   // Реальный 3D world pos пальца
-          if (!fw||!g||g.pinchStrength<0.75) continue
-          taskbar.setHovered(taskbar.hitTest(fw))
-          if (g.pinchStrength>0.80) {
-            const hit=taskbar.hitTest(fw)
-            if (hit){hit.onClick();taskbarCD=28;break}
-          }
-        }
-        if (taskbarCD===0) {
-          // Показываем hover без нажатия
-          for (let hi=0;hi<2;hi++) {
-            const fw=fingerWorld[hi]
-            if (fw) { taskbar.setHovered(taskbar.hitTest(fw)); break }
-          }
-        }
-      }
     }
 
-    taskbar.update(time,scene.camera)
+    // Taskbar: hover + click + drag
+    const tbFinger = fingerWorld[0] ?? fingerWorld[1] ?? null
+    const tbPinch  = Math.max(leftG?.pinchStrength??0, rightG?.pinchStrength??0)
+    if(tbFinger){
+      const hov = taskbar.hitTest(tbFinger)
+      taskbar.setHovered(hov)
+      taskbarCD = Math.max(0, taskbarCD-1)
+      if(taskbarCD===0 && tbPinch>0.82 && hov){
+        taskbar.pressAnimation(hov)
+        hov.onClick()
+        taskbarCD = 30
+      }
+    } else {
+      taskbar.setHovered(null)
+    }
+    taskbar.update(time, scene.camera, tbFinger, tbPinch>0.70)
 
     // Hands
     const lms=[

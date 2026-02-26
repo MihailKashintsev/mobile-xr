@@ -1,12 +1,12 @@
 /**
- * TaskBar3D v3 — постоянная 3D панель задач
+ * TaskBar3D v5
  *
  * ФИКСЫ:
- * - hitTest: теперь использует РЕАЛЬНЫЙ 3D finger world point (не NDC ray)
- * - Увеличенная зона нажатия: ±8cm вместо ±6cm
- * - setHovered: визуальная подсветка при приближении пальца
- * - Анимация нажатия: кнопка "проваливается"
- * - Drag: панель следует за камерой через lerp (не прыгает)
+ * - update() принимает (time, camera, fingerWorld, pinchActive) — синхронизировано с main.ts
+ * - Drag: щипок по фоновой панели тащит тасктбар
+ * - Кнопки: hitTest → onClick работает
+ * - depthTest:false на фоне → рука (renderOrder:999) рисуется поверх
+ * - Дизайн: glassmorphism стиль
  */
 import * as THREE from 'three'
 
@@ -17,171 +17,217 @@ export interface TaskBarButton {
   active?: boolean
 }
 
-function makeIconTexture(icon: string, label: string, active: boolean, hovered: boolean): THREE.CanvasTexture {
-  const W=160, H=128
-  const c = document.createElement('canvas'); c.width=W; c.height=H
-  const ctx = c.getContext('2d')!
+function makeIconTex(icon:string,label:string,active:boolean,hov:boolean):THREE.CanvasTexture{
+  const W=180,H=140
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H
+  const c=cv.getContext('2d')!
 
-  // Background
-  const bg = active ? 0x312e81 : hovered ? 0x1e2a4a : 0x111827
-  ctx.fillStyle = `#${bg.toString(16).padStart(6,'0')}`
-  ctx.beginPath(); ctx.roundRect(3,3,W-6,H-6,14); ctx.fill()
+  // BG gradient
+  const bg=c.createLinearGradient(0,0,0,H)
+  if(active){ bg.addColorStop(0,'#1e1b4b'); bg.addColorStop(1,'#312e81') }
+  else if(hov){ bg.addColorStop(0,'#1a2744'); bg.addColorStop(1,'#111827') }
+  else{ bg.addColorStop(0,'#0f172a'); bg.addColorStop(1,'#0a0f1e') }
+  c.fillStyle=bg; c.beginPath(); c.roundRect(3,3,W-6,H-6,14); c.fill()
 
-  if (hovered || active) {
-    const g = ctx.createLinearGradient(0,0,0,H*0.5)
-    g.addColorStop(0, 'rgba(255,255,255,.18)')
-    g.addColorStop(1, 'rgba(255,255,255,0)')
-    ctx.fillStyle=g; ctx.beginPath(); ctx.roundRect(3,3,W-6,H/2,14); ctx.fill()
+  // Shimmer
+  if(active||hov){
+    const sh=c.createLinearGradient(0,0,0,H*0.55)
+    sh.addColorStop(0,'rgba(255,255,255,.18)'); sh.addColorStop(1,'rgba(255,255,255,0)')
+    c.fillStyle=sh; c.beginPath(); c.roundRect(3,3,W-6,H*0.48,14); c.fill()
   }
 
   // Border
-  if (active) {
-    ctx.strokeStyle='rgba(99,102,241,.8)'; ctx.lineWidth=2
-    ctx.beginPath(); ctx.roundRect(2,2,W-4,H-4,14); ctx.stroke()
-  }
+  c.strokeStyle=active?'rgba(129,140,248,.9)':hov?'rgba(99,102,241,.4)':'rgba(55,65,90,.5)'
+  c.lineWidth=active?2:1; c.beginPath(); c.roundRect(3,3,W-6,H-6,14); c.stroke()
 
   // Icon
-  ctx.font=`${Math.round(H*0.46)}px serif`
-  ctx.textAlign='center'; ctx.textBaseline='middle'
-  ctx.fillText(icon, W/2, H*0.43)
+  c.font=`${Math.round(H*0.44)}px serif`
+  c.textAlign='center'; c.textBaseline='middle'; c.fillText(icon,W/2,H*0.41)
 
   // Label
-  ctx.fillStyle = active ? '#a5b4fc' : 'rgba(200,210,230,.85)'
-  ctx.font=`500 ${Math.round(H*0.175)}px -apple-system,sans-serif`
-  ctx.fillText(label, W/2, H*0.83, W-12)
+  c.fillStyle=active?'#a5b4fc':hov?'#c7d2fe':'rgba(148,163,184,.85)'
+  c.font=`500 ${Math.round(H*0.175)}px -apple-system,sans-serif`
+  c.textAlign='center'; c.textBaseline='top'; c.fillText(label,W/2,H*0.73,W-14)
 
-  const t = new THREE.CanvasTexture(c); t.needsUpdate=true; return t
+  const t=new THREE.CanvasTexture(cv); t.needsUpdate=true; return t
 }
 
-export class TaskBar3D {
-  group: THREE.Group
-  private btnGroups: THREE.Group[] = []
-  private btnDefs:   TaskBarButton[] = []
-  private hoveredBtn: TaskBarButton | null = null
-  private clock = 0
-  private targetPos = new THREE.Vector3()
+export class TaskBar3D{
+  group:THREE.Group
+  private btns:TaskBarButton[]=[]
+  private btnGs:THREE.Group[]=[]
+  private hovBtn:TaskBarButton|null=null
 
-  constructor() {
-    this.group = new THREE.Group()
-  }
+  // Drag state
+  private _drag=false
+  private _dragOffset=new THREE.Vector3()
+  private _prevPinch=false
 
-  setButtons(btns: TaskBarButton[]): void {
-    this.btnDefs = btns; this.rebuild()
-  }
+  // Smooth follow
+  private _targetPos=new THREE.Vector3()
+  private _initialized=false
+  private _freePos=false  // true после drag — не возвращаемся к камере
 
-  private rebuild(): void {
-    this.group.clear(); this.btnGroups = []
+  constructor(){ this.group=new THREE.Group(); this.group.renderOrder=1 }
 
-    const n=this.btnDefs.length, GAP=0.14, W=0.11, H=0.11, D=0.018
-    const totalW = n*W + (n-1)*GAP
+  setButtons(btns:TaskBarButton[]):void{ this.btns=btns; this._rebuild() }
 
-    // Panel background
-    const panelMat = new THREE.MeshPhysicalMaterial({
-      color:0x080e1c, transparent:true, opacity:0.88, roughness:0.1, metalness:0.25
-    })
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(totalW+0.08, H+0.07, D*0.5), panelMat)
-    this.group.add(panel)
+  private _rebuild():void{
+    this.group.clear(); this.btnGs=[]
+    const n=this.btns.length, BW=0.118,BH=0.118,BD=0.022,GAP=0.010
+    const TW=n*BW+(n-1)*GAP
 
-    // Accent stripe top
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(totalW+0.08, 0.004, D*0.5),
-      new THREE.MeshBasicMaterial({color:0x6366f1})
-    )
-    stripe.position.y = (H+0.07)/2; this.group.add(stripe)
-
-    // Buttons
-    for (let i=0; i<n; i++) {
-      const btn = this.btnDefs[i]
-      const bg  = new THREE.Group()
-      bg.position.x = -totalW/2 + i*(W+GAP) + W/2
-
-      const isHov = this.hoveredBtn === btn
-      const btnMat = new THREE.MeshPhysicalMaterial({
-        color:      btn.active ? 0x312e81 : isHov ? 0x1e2a4a : 0x111827,
-        transparent:true, opacity:0.92,
-        roughness:  0.15, metalness:0.1,
-        emissive:   new THREE.Color(btn.active ? 0x4338ca : isHov ? 0x1e3a5f : 0x000000),
-        emissiveIntensity: btn.active ? 0.4 : isHov ? 0.2 : 0,
+    // Panel — depthTest:false = рука рисуется поверх благодаря renderOrder:999
+    const panel=new THREE.Mesh(
+      new THREE.BoxGeometry(TW+0.055,BH+0.055,BD*0.35),
+      new THREE.MeshPhysicalMaterial({
+        color:0x050c1a, transparent:true, opacity:0.88,
+        roughness:0.05, metalness:0.35,
+        depthTest:false, // ← ключевое
       })
-      const btnMesh = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), btnMat)
-      bg.add(btnMesh)
+    )
+    panel.renderOrder=1; this.group.add(panel)
 
-      const iconPlane = new THREE.Mesh(
-        new THREE.PlaneGeometry(W*0.88, H*0.88),
-        new THREE.MeshBasicMaterial({
-          map: makeIconTexture(btn.icon, btn.label, btn.active??false, isHov),
-          transparent:true, depthWrite:false
+    // Glow border
+    const border=new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(TW+0.060,BH+0.060,BD*0.36)),
+      new THREE.LineBasicMaterial({color:0x4f46e5,transparent:true,opacity:0.35,depthTest:false})
+    )
+    border.renderOrder=1; this.group.add(border)
+
+    // Top accent strip
+    const accent=new THREE.Mesh(
+      new THREE.BoxGeometry(TW+0.055,0.004,BD*0.35),
+      new THREE.MeshBasicMaterial({color:0x6366f1,depthTest:false})
+    )
+    accent.position.y=(BH+0.055)/2; accent.renderOrder=1; this.group.add(accent)
+
+    for(let i=0;i<n;i++){
+      const btn=this.btns[i]
+      const bg=new THREE.Group(); bg.renderOrder=1
+      bg.position.x=-TW/2+i*(BW+GAP)+BW/2
+
+      const isHov=this.hovBtn===btn
+      const face=new THREE.Mesh(
+        new THREE.BoxGeometry(BW,BH,BD),
+        new THREE.MeshPhysicalMaterial({
+          color:btn.active?0x1e1b4b:isHov?0x1a2744:0x0f172a,
+          transparent:true,opacity:0.95,
+          roughness:0.1,metalness:0.05,
+          emissive:new THREE.Color(btn.active?0x3730a3:isHov?0x1e3a6e:0),
+          emissiveIntensity:btn.active?0.55:isHov?0.25:0,
+          depthTest:false,
         })
       )
-      iconPlane.position.z = D/2 + 0.003; bg.add(iconPlane)
+      face.renderOrder=1; bg.add(face)
 
-      // Active border
-      if (btn.active) {
-        const border = new THREE.LineSegments(
-          new THREE.EdgesGeometry(new THREE.BoxGeometry(W+0.008, H+0.008, D+0.003)),
-          new THREE.LineBasicMaterial({color:0x6366f1, transparent:true, opacity:0.8})
-        )
-        bg.add(border)
-      }
+      const plane=new THREE.Mesh(
+        new THREE.PlaneGeometry(BW*0.90,BH*0.90),
+        new THREE.MeshBasicMaterial({
+          map:makeIconTex(btn.icon,btn.label,btn.active??false,isHov),
+          transparent:true,depthWrite:false,depthTest:false
+        })
+      )
+      plane.position.z=BD/2+0.003; plane.renderOrder=1; bg.add(plane)
 
-      bg.userData = { btn, btnMesh, iconPlane }
-      this.btnGroups.push(bg)
-      this.group.add(bg)
+      bg.userData={btn}
+      this.btnGs.push(bg); this.group.add(bg)
     }
   }
 
-  /** Hit-test через реальный 3D world point пальца */
-  hitTest(fingerWorld: THREE.Vector3): TaskBarButton | null {
-    for (const bg of this.btnGroups) {
-      bg.updateWorldMatrix(true, false)
-      const local = bg.worldToLocal(fingerWorld.clone())
-      // Зона ±8cm X/Y, ±12cm Z
-      if (Math.abs(local.x) < 0.08 && Math.abs(local.y) < 0.08 && Math.abs(local.z) < 0.12) {
+  /** Hit-test кнопки через fingerWorld */
+  hitTest(fw:THREE.Vector3):TaskBarButton|null{
+    for(const bg of this.btnGs){
+      bg.updateWorldMatrix(true,false)
+      const l=bg.worldToLocal(fw.clone())
+      if(Math.abs(l.x)<0.09&&Math.abs(l.y)<0.09&&Math.abs(l.z)<0.16)
         return bg.userData.btn as TaskBarButton
-      }
     }
     return null
   }
 
-  /** Обновить hover визуал */
-  setHovered(btn: TaskBarButton | null): void {
-    if (btn === this.hoveredBtn) return
-    this.hoveredBtn = btn
-    this.rebuild()
+  /** Hit-test панели для drag */
+  private _hitPanel(fw:THREE.Vector3):boolean{
+    this.group.updateWorldMatrix(true,false)
+    const l=this.group.worldToLocal(fw.clone())
+    const n=this.btns.length, TW=n*0.118+(n-1)*0.010
+    return Math.abs(l.x)<TW/2+0.04&&Math.abs(l.y)<0.09&&Math.abs(l.z)<0.16
   }
 
-  setActive(icon: string, active: boolean): void {
-    const b = this.btnDefs.find(b=>b.icon===icon)
-    if (b && b.active!==active) { b.active=active; this.rebuild() }
+  setHovered(btn:TaskBarButton|null):void{
+    if(btn===this.hovBtn)return; this.hovBtn=btn; this._rebuild()
   }
 
-  /** Анимация нажатия — кнопка проваливается */
-  pressAnimation(btn: TaskBarButton): void {
-    const bg = this.btnGroups.find(g=>g.userData.btn===btn)
-    if (!bg) return
-    const origZ = bg.position.z
-    bg.position.z -= 0.012
-    setTimeout(()=>{ bg.position.z=origZ }, 150)
+  setActive(icon:string,active:boolean):void{
+    const b=this.btns.find(b=>b.icon===icon)
+    if(b&&b.active!==active){b.active=active;this._rebuild()}
   }
 
-  update(time: number, camera: THREE.PerspectiveCamera): void {
-    this.clock = time
+  pressAnimation(btn:TaskBarButton):void{
+    const bg=this.btnGs.find(g=>g.userData.btn===btn); if(!bg)return
+    const oz=bg.position.z; bg.position.z-=0.015
+    setTimeout(()=>{bg.position.z=oz},130)
+  }
 
-    // Целевая позиция — внизу FOV камеры
-    const offset = new THREE.Vector3(0, -0.33, -0.66)
-    offset.applyQuaternion(camera.quaternion)
-    this.targetPos.copy(camera.position).add(offset)
-
-    // Lerp для плавности (убирает дрожание)
-    this.group.position.lerp(this.targetPos, 0.12)
-    this.group.quaternion.slerp(camera.quaternion, 0.12)
-
-    // Пульсация accent stripe
-    const stripe = this.group.children[1] as THREE.Mesh
-    if (stripe?.material) {
-      (stripe.material as THREE.MeshBasicMaterial).opacity = 0.6 + Math.sin(time*1.8)*0.4
+  /**
+   * @param time      performance time
+   * @param camera    main camera
+   * @param fw        fingerWorld (кончик указательного) или null
+   * @param pinching  true если щипок активен
+   */
+  update(time:number, camera:THREE.PerspectiveCamera, fw:THREE.Vector3|null, pinching:boolean):void{
+    // Первый кадр — позиционируем перед камерой
+    if(!this._initialized){
+      const off=new THREE.Vector3(0,-0.33,-0.67)
+      off.applyQuaternion(camera.quaternion)
+      this.group.position.copy(camera.position).add(off)
+      this.group.quaternion.copy(camera.quaternion)
+      this._initialized=true
     }
+
+    // Drag логика
+    if(fw){
+      const onPanel=this._hitPanel(fw)
+      const pinchStart = pinching && !this._prevPinch
+      const pinchEnd   = !pinching && this._prevPinch
+
+      if(!this._drag && pinchStart && onPanel){
+        // Начало drag — запоминаем смещение
+        this._drag=true
+        this._freePos=true
+        const gp=new THREE.Vector3(); this.group.getWorldPosition(gp)
+        this._dragOffset.subVectors(gp,fw)
+      }
+      if(this._drag && pinching){
+        // Тащим
+        const target=new THREE.Vector3().addVectors(fw,this._dragOffset)
+        this.group.position.lerp(target,0.45)
+        this.group.quaternion.slerp(camera.quaternion,0.12)
+      }
+      if(this._drag && pinchEnd){
+        this._drag=false
+      }
+    }else{
+      if(!pinching) this._drag=false
+    }
+    this._prevPinch=pinching
+
+    // Если не в drag и не в свободном положении — следим за камерой
+    if(!this._drag && !this._freePos){
+      const off=new THREE.Vector3(0,-0.33,-0.67)
+      off.applyQuaternion(camera.quaternion)
+      const target=new THREE.Vector3().copy(camera.position).add(off)
+      this.group.position.lerp(target,0.08)
+      this.group.quaternion.slerp(camera.quaternion,0.10)
+    }else if(!this._drag && this._freePos){
+      // После drag — только поворот камеры, позиция свободна
+      this.group.quaternion.slerp(camera.quaternion,0.08)
+    }
+
+    // Accent пульсация
+    const ac=this.group.children[2] as THREE.Mesh
+    if(ac?.material)(ac.material as THREE.MeshBasicMaterial).opacity=0.55+Math.sin(time*1.5)*0.45
   }
 
-  addToScene(s: THREE.Scene): void { s.add(this.group) }
+  addToScene(s:THREE.Scene):void{s.add(this.group)}
 }
