@@ -153,32 +153,27 @@ async function main(): Promise<void> {
       leftG ?ndcOf(leftG.indexTip) :null,
       rightG?ndcOf(rightG.indexTip):null,
     ]
-    // 3D world positions кончиков указательных пальцев для hit-test кнопок
+    // 3D world positions кончиков указательных пальцев (полная глубина — для HandMesh)
     const fingerWorld=[
       leftLM  ? landmarkToWorld(leftLM[8],  scene.camera, isFrontCam) : null,
       rightLM ? landmarkToWorld(rightLM[8], scene.camera, isFrontCam) : null,
     ]
+    // Projected to UI plane (~0.65m) — для hit-test тасктбара и окон
+    // Окна и тасктбар живут на 0.5-0.7м от камеры
+    const fingerNear=[
+      leftG  ? landmarkToWorldAtDist(leftG.indexTip,  scene.camera, isFrontCam, 0.65) : null,
+      rightG ? landmarkToWorldAtDist(rightG.indexTip, scene.camera, isFrontCam, 0.65) : null,
+    ]
 
     if (handsReady) {
-      winMgr.update(time,[leftG,rightG],fingerNDC,fingerWorld)
+      winMgr.update(time,[leftG,rightG],fingerNDC,fingerNear)
     }
 
-    // Taskbar: hover + click + drag
-    const tbFinger = fingerWorld[0] ?? fingerWorld[1] ?? null
+    // Taskbar (HTML overlay) — кнопки работают через touch/click напрямую
+    // update() вызываем для совместимости
+    const tbFinger = fingerNear[0] ?? fingerNear[1] ?? null
     const tbPinch  = Math.max(leftG?.pinchStrength??0, rightG?.pinchStrength??0)
-    if(tbFinger){
-      const hov = taskbar.hitTest(tbFinger)
-      taskbar.setHovered(hov)
-      taskbarCD = Math.max(0, taskbarCD-1)
-      if(taskbarCD===0 && tbPinch>0.82 && hov){
-        taskbar.pressAnimation(hov)
-        hov.onClick()
-        taskbarCD = 30
-      }
-    } else {
-      taskbar.setHovered(null)
-    }
-    taskbar.update(time, scene.camera, tbFinger, tbPinch>0.70)
+    taskbar.update(time, scene.camera, tbFinger, tbPinch > 0.70)
 
     // Hands
     const lms=[
@@ -275,9 +270,18 @@ async function main(): Promise<void> {
 function landmarkToWorld(lm:Landmark,cam:THREE.PerspectiveCamera,isFront:boolean):THREE.Vector3{
   const ndcX=isFront?(1-lm.x)*2-1:lm.x*2-1
   const ndcY=-(lm.y*2-1)
-  const depth=Math.max(1.2,Math.min(4.5,2.5-lm.z*6))
+  // Ближняя проекция для HandMesh (рука должна быть близко к AR фону)
+  const depth=Math.max(0.5,Math.min(1.5,0.9-lm.z*3))
   const dir=new THREE.Vector3(ndcX,ndcY,0.5).unproject(cam).sub(cam.position).normalize()
   return cam.position.clone().addScaledVector(dir,depth)
+}
+
+/** Проецирует NDC точку пальца на фиксированную дистанцию — для UI hit-test */
+function landmarkToWorldAtDist(lm:Landmark,cam:THREE.PerspectiveCamera,isFront:boolean,dist:number):THREE.Vector3{
+  const ndcX=isFront?(1-lm.x)*2-1:lm.x*2-1
+  const ndcY=-(lm.y*2-1)
+  const dir=new THREE.Vector3(ndcX,ndcY,0.5).unproject(cam).sub(cam.position).normalize()
+  return cam.position.clone().addScaledVector(dir,dist)
 }
 
 declare const __APP_VERSION__: string
