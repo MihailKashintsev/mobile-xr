@@ -369,7 +369,8 @@ export class XRWindow {
   update(t: number): void {
     if (this._dragging) return
     // Лёгкое парение
-    this.group.position.y += (Math.sin(t * 0.55 + this.floatBase) * 0.006 - this.group.userData.floatY ?? 0) * 0.05
+    const prevY: number = this.group.userData.floatY ?? 0
+    this.group.position.y += (Math.sin(t * 0.55 + this.floatBase) * 0.006 - prevY) * 0.05
     this.group.userData.floatY = Math.sin(t * 0.55 + this.floatBase) * 0.006
   }
 
