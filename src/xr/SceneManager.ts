@@ -17,6 +17,7 @@ export class SceneManager {
     this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100)
     this.renderer = new THREE.WebGLRenderer({
       antialias: window.devicePixelRatio < 2, alpha: false, powerPreference: 'high-performance',
+      preserveDrawingBuffer: true,
     })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.5))
     this.renderer.setSize(window.innerWidth, window.innerHeight)

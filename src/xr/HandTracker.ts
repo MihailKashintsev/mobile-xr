@@ -73,6 +73,14 @@ export class HandTracker {
     await this.startCamera(deviceId, null)
   }
 
+  async switchNextCamera(): Promise<void> {
+    const cameras = await this.getCameras()
+    if (cameras.length < 2) return
+    const idx = cameras.findIndex(cam => cam.deviceId === this.currentDeviceId)
+    const next = cameras[(idx+1) % cameras.length]
+    await this.switchCamera(next.deviceId)
+  }
+
   private async startCamera(deviceId: string | null, prefer: 'user' | 'environment' | null): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Нужен HTTPS для доступа к камере')
     let stream: MediaStream | null = null
@@ -131,6 +139,8 @@ export class HandTracker {
   }
 
   getCurrentDeviceId() { return this.currentDeviceId }
+  async switchToDevice(deviceId: string): Promise<void> { await this.switchCamera(deviceId) }
+  getCurrentLabel(): string { return this.currentDeviceId ? `Устройство ${this.currentDeviceId.slice(0,8)}` : "—" }
   isFront() { return this.isFrontCamera }
   onHands(cb: HandsCallback) { this.callbacks.push(cb) }
   getVideoElement() { return this.videoEl }

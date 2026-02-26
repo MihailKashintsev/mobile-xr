@@ -3,6 +3,12 @@ name: Build & Deploy
 on:
   push:
     branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия (опционально, например: 1.2.3)'
+        required: false
 
 permissions:
   contents: read
@@ -18,10 +24,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
+
       - run: npm ci
-      - run: npm run build
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Тег → используем его
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            # Manual dispatch
+            VERSION="${{ inputs.version }}"
+            VERSION="${VERSION#v}"
+          else
+            # Обычный push → базовая версия + номер сборки + хэш
+            BASE=$(node -e "process.stdout.write(require('./package.json').version)")
+            BUILD=$(git rev-list --count HEAD)
+            SHORT=$(git rev-parse --short HEAD)
+            VERSION="${BASE}+${BUILD}.${SHORT}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "🏷️ VERSION: ${VERSION}"
+
+      - name: Build
+        run: npm run build
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+
       - uses: actions/upload-pages-artifact@v3
         with: { path: dist }
 
