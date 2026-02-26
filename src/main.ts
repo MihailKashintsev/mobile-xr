@@ -56,7 +56,7 @@ async function main(): Promise<void> {
 
   vrRoom.addToScene(scene.scene)
   taskbar.addToScene(scene.scene)
-  const cg = new ColorGrading(scene.renderer)
+  const cg = new ColorGrading(scene.renderer.domElement)
   settings.setColorGrading(cg)
 
   // ─── Руки ─────────────────────────────────────────────────────────────────
@@ -164,14 +164,21 @@ async function main(): Promise<void> {
       taskbarCD=Math.max(0,taskbarCD-1)
       if (taskbarCD===0) {
         for (let hi=0;hi<2;hi++) {
-          const ndc=fingerNDC[hi],g=[leftG,rightG][hi]
-          if (!ndc||!g||g.pinchStrength<0.80) continue
-          const sr = stereoActive ? scene.getStereoRenderer() : undefined
-          const cam: THREE.PerspectiveCamera = sr?.camL ?? scene.camera
-          const dir=new THREE.Vector3(ndc.ndcX,ndc.ndcY,0.5).unproject(cam).sub(cam.position).normalize()
-          const pt=cam.position.clone().addScaledVector(dir,0.65)
-          const hit=taskbar.hitTest(pt)
-          if (hit){hit.onClick();taskbarCD=25;break}
+          const g=[leftG,rightG][hi]
+          const fw=fingerWorld[hi]   // Реальный 3D world pos пальца
+          if (!fw||!g||g.pinchStrength<0.75) continue
+          taskbar.setHovered(taskbar.hitTest(fw))
+          if (g.pinchStrength>0.80) {
+            const hit=taskbar.hitTest(fw)
+            if (hit){hit.onClick();taskbarCD=28;break}
+          }
+        }
+        if (taskbarCD===0) {
+          // Показываем hover без нажатия
+          for (let hi=0;hi<2;hi++) {
+            const fw=fingerWorld[hi]
+            if (fw) { taskbar.setHovered(taskbar.hitTest(fw)); break }
+          }
         }
       }
     }
