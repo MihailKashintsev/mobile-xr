@@ -78,6 +78,13 @@ jobs:
           exec java -jar "$(dirname "$0")/gradle/wrapper/gradle-wrapper.jar" "$@"
           SH
           chmod +x gradlew
+          
+          # gradle.properties — ОБЯЗАТЕЛЬНО для AndroidX
+          cat > gradle.properties << GPROPS
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m
+          GPROPS
 
           mkdir -p app/src/main/res/values
           mkdir -p app/src/main/res/xml

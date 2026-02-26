@@ -6,6 +6,8 @@
 import type { StereoRenderer, StereoCalibration } from '../xr/StereoRenderer'
 import { DEFAULT_CALIBRATION } from '../xr/StereoRenderer'
 import type { HandTracker } from '../xr/HandTracker'
+import type { ColorGrading, ColorGradingParams } from './ColorGrading'
+import { DEFAULT_CG } from './ColorGrading'
 
 export type HandRenderMode = 'skeleton' | '3d'
 
@@ -38,6 +40,9 @@ export class SettingsWindow {
   private sls  = new Map<keyof StereoCalibration, HTMLInputElement>()
   private vals = new Map<keyof StereoCalibration, HTMLSpanElement>()
   private visible = false
+  private cg?: ColorGrading
+  private cgSls = new Map<keyof ColorGradingParams, HTMLInputElement>()
+  private cgVals = new Map<keyof ColorGradingParams, HTMLSpanElement>()
   onHandMode?:     (m: HandRenderMode) => void
   onSwitchCamera?: () => void
   version = '1.0.0'
@@ -52,6 +57,7 @@ export class SettingsWindow {
 
   setStereo(sr: StereoRenderer): void { this.stereo=sr; this.sync() }
   setTracker(t: HandTracker): void { this.tracker=t }
+  setColorGrading(cg: ColorGrading): void { this.cg = cg; this.syncCG() }
   open(): void  { this.visible=true;  this.el.classList.add('open'); this.sync(); this.loadCams() }
   close(): void { this.visible=false; this.el.classList.remove('open') }
   toggle(): void { this.visible?this.close():this.open() }
@@ -75,6 +81,7 @@ export class SettingsWindow {
     <button class="sw-tab" data-t="vr">👓 VR</button>
     <button class="sw-tab" data-t="hands">🖐 Руки</button>
     <button class="sw-tab" data-t="about">ℹ️</button>
+    <button class="sw-tab" data-t="color">🎨</button>
   </div>
   <div class="sw-body">
 
@@ -128,6 +135,18 @@ export class SettingsWindow {
       </div>
     </div>
 
+
+    <!-- ЦВЕТОКОРРЕКЦИЯ -->
+    <div class="sw-pane" id="sp-color">
+      <div class="sw-lbl">Цветокоррекция</div>
+      <div class="hm-row" style="margin-bottom:12px">
+        <button class="hm-btn active" id="cg-off">Выкл</button>
+        <button class="hm-btn" id="cg-on">Вкл</button>
+      </div>
+      <div id="cg-sliders"></div>
+      <button class="sw-btn sw-ghost" id="cg-reset">↺ Сброс цвета</button>
+    </div>
+
   </div>
 </div>`
 
@@ -166,11 +185,67 @@ export class SettingsWindow {
     this.el.querySelector('#sw-reset')!.addEventListener('click',()=>{this.stereo?.resetCalibration();this.sync()})
 
     // Hand mode
-    this.el.querySelectorAll('.hm-btn').forEach(b=>b.addEventListener('click',()=>{
+    this.el.querySelectorAll('[data-m]').forEach(b=>b.addEventListener('click',()=>{
       const m=(b as HTMLElement).dataset.m as HandRenderMode
-      this.el.querySelectorAll('.hm-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active')
+      this.el.querySelectorAll('[data-m]').forEach(x=>x.classList.remove('active')); b.classList.add('active')
       this.onHandMode?.(m)
     }))
+
+    // Color grading toggle
+    this.el.querySelector('#cg-off')!.addEventListener('click',()=>{
+      this.cg?.setParams({enabled:false})
+      this.el.querySelector('#cg-off')!.classList.add('active')
+      this.el.querySelector('#cg-on')!.classList.remove('active')
+    })
+    this.el.querySelector('#cg-on')!.addEventListener('click',()=>{
+      this.cg?.setParams({enabled:true})
+      this.el.querySelector('#cg-on')!.classList.add('active')
+      this.el.querySelector('#cg-off')!.classList.remove('active')
+    })
+
+    // Color grading sliders
+    const cgDefs: {key:keyof ColorGradingParams;label:string;min:number;max:number;step:number;unit:string}[] = [
+      {key:'brightness', label:'Яркость',    min:-0.5, max:0.5,  step:0.01, unit:''},
+      {key:'contrast',   label:'Контраст',   min:0.5,  max:1.8,  step:0.01, unit:'x'},
+      {key:'saturation', label:'Насыщенность',min:0,   max:2.0,  step:0.01, unit:'x'},
+      {key:'tintR',      label:'Красный',    min:0.6,  max:1.4,  step:0.01, unit:''},
+      {key:'tintG',      label:'Зелёный',    min:0.6,  max:1.4,  step:0.01, unit:''},
+      {key:'tintB',      label:'Синий',      min:0.6,  max:1.4,  step:0.01, unit:''},
+    ]
+    const cgSlc = this.el.querySelector('#cg-sliders')!
+    for (const d of cgDefs) {
+      const def = DEFAULT_CG[d.key] as number
+      const row = document.createElement('div'); row.className='sl-row'
+      row.innerHTML=`<div class="sl-top"><span class="sl-lb">${d.label}</span><span class="sl-vl" id="cgv-${d.key}">${def.toFixed(2)}${d.unit}</span></div><input type="range" class="sl-in" id="cgs-${d.key}" min="${d.min}" max="${d.max}" step="${d.step}" value="${def}"/>`
+      cgSlc.appendChild(row)
+      const inp = row.querySelector(`#cgs-${d.key}`) as HTMLInputElement
+      const vel = row.querySelector(`#cgv-${d.key}`) as HTMLSpanElement
+      this.cgSls.set(d.key, inp); this.cgVals.set(d.key, vel)
+      inp.addEventListener('input',()=>{
+        const n=parseFloat(inp.value); vel.textContent=`${n.toFixed(2)}${d.unit}`
+        this.cg?.setParams({[d.key]:n} as any)
+      })
+    }
+    this.el.querySelector('#cg-reset')!.addEventListener('click',()=>{this.cg?.reset();this.syncCG()})
+  }
+
+
+  private syncCG(): void {
+    if (!this.cg) return
+    const p = this.cg.getParams()
+    // enabled toggle
+    const offBtn = this.el.querySelector('#cg-off')
+    const onBtn  = this.el.querySelector('#cg-on')
+    if (offBtn && onBtn) {
+      offBtn.classList.toggle('active', !p.enabled)
+      onBtn.classList.toggle('active',   p.enabled)
+    }
+    const keys: (keyof typeof p)[] = ['brightness','contrast','saturation','tintR','tintG','tintB']
+    for (const k of keys) {
+      const inp = this.cgSls.get(k as keyof ColorGradingParams)
+      const vel = this.cgVals.get(k as keyof ColorGradingParams)
+      if (inp && vel) { inp.value=String(p[k]); vel.textContent=(p[k] as number).toFixed(2) }
+    }
   }
 
   private sync(): void {

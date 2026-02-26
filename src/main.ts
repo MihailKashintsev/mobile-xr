@@ -12,6 +12,7 @@ import { VRRoom }         from './ui/VRRoom'
 import { CameraApp }      from './ui/CameraApp'
 import { PinchParticles } from './ui/PinchParticles'
 import { AutoUpdater }    from './updater/AutoUpdater'
+import { ColorGrading }   from './ui/ColorGrading'
 import * as THREE         from 'three'
 
 const APP_VERSION: string = __APP_VERSION__
@@ -55,6 +56,8 @@ async function main(): Promise<void> {
 
   vrRoom.addToScene(scene.scene)
   taskbar.addToScene(scene.scene)
+  const cg = new ColorGrading(scene.renderer)
+  settings.setColorGrading(cg)
 
   // ─── Руки ─────────────────────────────────────────────────────────────────
   let handMode: HandRenderMode = 'skeleton'
@@ -150,9 +153,14 @@ async function main(): Promise<void> {
       leftG ?ndcOf(leftG.indexTip) :null,
       rightG?ndcOf(rightG.indexTip):null,
     ]
+    // 3D world positions кончиков указательных пальцев для hit-test кнопок
+    const fingerWorld=[
+      leftLM  ? landmarkToWorld(leftLM[8],  scene.camera, isFrontCam) : null,
+      rightLM ? landmarkToWorld(rightLM[8], scene.camera, isFrontCam) : null,
+    ]
 
     if (handsReady) {
-      winMgr.update(time,[leftG,rightG],fingerNDC)
+      winMgr.update(time,[leftG,rightG],fingerNDC,fingerWorld)
       taskbarCD=Math.max(0,taskbarCD-1)
       if (taskbarCD===0) {
         for (let hi=0;hi<2;hi++) {
@@ -199,7 +207,7 @@ async function main(): Promise<void> {
     // Particle effect on pinch
     particles.update(dt, pinchHands)
 
-    scene.render()
+    cg.renderWithGrading(()=>scene.render())
   }
   animate()
 
