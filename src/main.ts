@@ -88,6 +88,8 @@ async function main(): Promise<void> {
       return
     }
     cameraApp=new CameraApp(scene.renderer)
+    // Спаун окна в мировом пространстве перед камерой
+    spawnWindowInFrontOfCamera(cameraApp.window, 0.0, 0.05)
     cameraApp.window.onClose=()=>{
       winMgr.remove(cameraApp!.window)
       cameraApp=null
@@ -125,11 +127,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // XR Настройки (3D окно рукой)
-  function openSettingsXR(): void {
-    settingsXR.toggle()
-    taskbar.setActive('⚙️', settingsXR.isOpen())
-  }
+
 
   // Закрыть все окна (кроме тасктбара)
   function closeAllWindows(): void {
@@ -158,6 +156,29 @@ async function main(): Promise<void> {
   let handsReady=false, videoReady=false, isFrontCam=false, taskbarCD=0
   const gesture=new GestureDetector()
   let prevTime=performance.now()*0.001
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  /** Разместить XRWindow в мировом пространстве перед камерой */
+  function spawnWindowInFrontOfCamera(win: import('./ui/WindowManager').XRWindow, offsetX=0, offsetY=0, dist=1.4): void {
+    const cam = scene.camera
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
+    const right   = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
+    const up      = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
+    win.group.position
+      .copy(cam.position)
+      .addScaledVector(forward, dist)
+      .addScaledVector(right, offsetX)
+      .addScaledVector(up, offsetY)
+    win.group.quaternion.copy(cam.quaternion)
+  }
+
+  // Спаун XR настроек перед камерой при первом открытии
+  function openSettingsXR(): void {
+    if (!settingsXR.isOpen()) spawnWindowInFrontOfCamera(settingsXR.window, -0.45, 0.05)
+    settingsXR.toggle()
+    taskbar.setActive('⚙️', settingsXR.isOpen())
+  }
 
   // ─── Render loop ──────────────────────────────────────────────────────────
   function animate(): void {

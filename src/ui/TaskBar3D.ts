@@ -61,21 +61,22 @@ export class TaskBar3D {
 
   addToScene(s: THREE.Scene): void { this.window.addTo(s) }
 
+  /**
+   * Ставим тасктбар один раз перед камерой при старте.
+   * После — НЕ следует за камерой (world-space фиксация).
+   * Пользователь может перетащить drag bar чтобы переместить.
+   */
   update(time: number, camera: THREE.PerspectiveCamera, _fw: THREE.Vector3|null, _p: boolean): void {
     if (!this._initialized) {
-      const off = new THREE.Vector3(0, -0.40, -0.72)
-      off.applyQuaternion(camera.quaternion)
-      this.window.group.position.copy(camera.position).add(off)
+      // Ставим прямо перед камерой снизу при первом кадре
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
+      const down    = new THREE.Vector3(0, -1,  0).applyQuaternion(camera.quaternion)
+      this.window.group.position
+        .copy(camera.position)
+        .addScaledVector(forward, 0.80)
+        .addScaledVector(down, 0.36)
       this.window.group.quaternion.copy(camera.quaternion)
       this._initialized = true
-    }
-    // Плавное следование за камерой (если не перетаскивают)
-    if (!this.window.dragging) {
-      const off = new THREE.Vector3(0, -0.40, -0.72)
-      off.applyQuaternion(camera.quaternion)
-      const target = new THREE.Vector3().copy(camera.position).add(off)
-      this.window.group.position.lerp(target, 0.04)
-      this.window.group.quaternion.slerp(camera.quaternion, 0.04)
     }
     this.window.update(time)
   }
