@@ -3,7 +3,6 @@ import type { Landmark }    from './xr/HandTracker'
 import { GestureDetector }  from './xr/GestureDetector'
 import type { GestureResult } from './xr/GestureDetector'
 import { SceneManager }     from './xr/SceneManager'
-import { GyroCamera }       from './xr/GyroCamera'
 import { XRWindow, WindowManager } from './ui/WindowManager'
 import { HandCursor }       from './ui/HandCursor'
 import { HandMesh }         from './ui/HandMesh'
@@ -20,7 +19,6 @@ import * as THREE           from 'three'
 
 const APP_VERSION: string = __APP_VERSION__
 
-// ─── DOM refs ────────────────────────────────────────────────────────────────
 const loadingScreen = document.getElementById('loading-screen')!
 const loadProgress  = document.getElementById('load-progress')!
 const loaderSub     = document.querySelector('.loader-sub') as HTMLElement
@@ -41,22 +39,24 @@ function toast(msg: string, dur = 3000): void {
     'background:rgba(8,15,26,.94);color:#dde4f5;padding:10px 18px;border-radius:10px;' +
     'font-family:-apple-system,sans-serif;font-size:.82rem;z-index:8000;' +
     'border:1px solid rgba(79,110,247,.35);max-width:88vw;text-align:center'
-  t.textContent = msg
-  document.body.appendChild(t)
-  setTimeout(() => t.remove(), dur)
+  t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), dur)
 }
 
-/**
- * Конвертирует нормализованный landmark (0-1) в 3D мировую точку.
- * Глубина: рука держится на ~50-75см от лица.
- * lm.z у MediaPipe: ≈0 на нейтральном расстоянии, отрицательный при приближении.
- */
+// Конвертация landmark → 3D мировая точка
 function landmarkToWorld(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: boolean): THREE.Vector3 {
   const ndcX = isFront ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
   const ndcY  = -(lm.y * 2 - 1)
   const depth = Math.max(0.38, Math.min(0.82, 0.58 - lm.z * 0.35))
   const dir = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam).sub(cam.position).normalize()
   return cam.position.clone().addScaledVector(dir, depth)
+}
+
+// Проецирует NDC на фиксированную дистанцию (для UI hit-test)
+function landmarkToWorldAtDist(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: boolean, dist: number): THREE.Vector3 {
+  const ndcX = isFront ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
+  const ndcY  = -(lm.y * 2 - 1)
+  const dir = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam).sub(cam.position).normalize()
+  return cam.position.clone().addScaledVector(dir, dist)
 }
 
 async function main(): Promise<void> {
@@ -66,7 +66,6 @@ async function main(): Promise<void> {
   setProgress(10, 'Инициализация 3D...')
   const appEl  = document.getElementById('app')!
   const scene  = new SceneManager(appEl)
-  const gyro   = new GyroCamera(scene.camera)
   const winMgr = new WindowManager(scene.scene, scene.camera)
   const taskbar = new TaskBar3D()
   const settingsHtml = new SettingsWindow()
@@ -85,29 +84,10 @@ async function main(): Promise<void> {
   settingsHtml.setColorGrading(cg)
   settingsXR.setColorGrading(cg)
 
-  // ── Гироскоп ────────────────────────────────────────────────────────────────
-  // Запрашиваем разрешение при первом касании (требование iOS)
-  let gyroEnabled = false
-  async function enableGyro(): Promise<void> {
-    if (gyroEnabled) return
-    const ok = await gyro.enable()
-    if (ok) {
-      gyroEnabled = true
-      toast('🧭 Гироскоп включён — голова управляет взглядом')
-    } else {
-      toast('⚠️ Гироскоп недоступен')
-    }
-  }
-  // Включаем при первом tap/click
-  document.addEventListener('click',  enableGyro, { once: true })
-  document.addEventListener('touchstart', () => enableGyro(), { once: true })
-
-  // ── Руки ─────────────────────────────────────────────────────────────────
+  // Руки
   let handMode: HandRenderMode = 'skeleton'
-  const leftCursor  = new HandCursor(0x06b6d4)
-  const rightCursor = new HandCursor(0xa78bfa)
-  const leftMesh    = new HandMesh()
-  const rightMesh   = new HandMesh()
+  const leftCursor  = new HandCursor(0x06b6d4); const rightCursor = new HandCursor(0xa78bfa)
+  const leftMesh    = new HandMesh();            const rightMesh   = new HandMesh()
   leftCursor.addToScene(scene.scene);  rightCursor.addToScene(scene.scene)
   leftMesh.addToScene(scene.scene);    rightMesh.addToScene(scene.scene)
   leftCursor.setVisible(false);  rightCursor.setVisible(false)
@@ -117,11 +97,11 @@ async function main(): Promise<void> {
 
   winMgr.add(settingsXR.window)
 
-  // ── Windows ───────────────────────────────────────────────────────────────
+  // Windows
   let cameraApp: CameraApp | null = null
   let stereoActive = false
 
-  /** Разместить окно в мире перед камерой в текущем направлении взгляда */
+  // Размещает окно перед камерой в текущем направлении взгляда
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
     const cam = scene.camera
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
@@ -129,10 +109,9 @@ async function main(): Promise<void> {
     const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
     win.group.position
       .copy(cam.position)
-      .addScaledVector(fwd,  dist)
-      .addScaledVector(rgt,  offsetX)
-      .addScaledVector(up,   offsetY)
-    // Окно смотрит на камеру (Billboard в момент спавна)
+      .addScaledVector(fwd, dist)
+      .addScaledVector(rgt, offsetX)
+      .addScaledVector(up,  offsetY)
     win.group.quaternion.copy(cam.quaternion)
   }
 
@@ -160,8 +139,7 @@ async function main(): Promise<void> {
   }
 
   function toggleRoom(): void {
-    const on = !vrRoom.isVisible()
-    vrRoom.setVisible(on)
+    const on = !vrRoom.isVisible(); vrRoom.setVisible(on)
     taskbar.setActive('🏠', on)
     toast(on ? '🏠 VR комната' : '📷 AR режим')
   }
@@ -172,8 +150,7 @@ async function main(): Promise<void> {
     stereoToggle.textContent = stereoActive ? '⚙️ Калибровка' : '👓 VR'
     if (stereoActive) {
       const sr = scene.getStereoRenderer()!
-      settingsHtml.setStereo(sr)
-      winMgr.setStereoCamera(sr.camL)
+      settingsHtml.setStereo(sr); winMgr.setStereoCamera(sr.camL)
       try { (screen.orientation as any)?.lock?.('landscape') } catch {}
     } else {
       winMgr.setStereoCamera(null)
@@ -196,34 +173,26 @@ async function main(): Promise<void> {
   }
 
   taskbar.setButtons([
-    { label: '⚙️ Настройки', onClick: openSettingsXR  },
-    { label: '📷 Камера',    onClick: openCamera       },
-    { label: '🏠 Комната',   onClick: toggleRoom       },
-    { label: '👓 VR',        onClick: toggleVR         },
-    { label: '✕ Закрыть',   onClick: closeAllWindows  },
+    { label: '⚙️ Настройки', onClick: openSettingsXR },
+    { label: '📷 Камера',    onClick: openCamera      },
+    { label: '🏠 Комната',   onClick: toggleRoom      },
+    { label: '👓 VR',        onClick: toggleVR        },
+    { label: '✕ Закрыть',   onClick: closeAllWindows },
   ])
   winMgr.add(taskbar.window)
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  let leftG:   GestureResult | null = null
-  let rightG:  GestureResult | null = null
-  let leftLM:  Landmark[] | null = null
-  let rightLM: Landmark[] | null = null
-  let leftWLD: Landmark[] | null = null
-  let rightWLD:Landmark[] | null = null
+  // State
+  let leftG:   GestureResult | null = null; let rightG:  GestureResult | null = null
+  let leftLM:  Landmark[] | null = null;    let rightLM: Landmark[] | null = null
+  let leftWLD: Landmark[] | null = null;    let rightWLD:Landmark[] | null = null
   let handsReady = false, videoReady = false, isFrontCam = false
   const gesture = new GestureDetector()
   let prevTime  = performance.now() * 0.001
 
-  // ── Render loop ───────────────────────────────────────────────────────────
   function animate(): void {
     requestAnimationFrame(animate)
     const time = performance.now() * 0.001
-    const dt   = Math.min(time - prevTime, 0.05)
-    prevTime   = time
-
-    // Гироскоп вращает камеру каждый кадр
-    gyro.update()
+    const dt   = Math.min(time - prevTime, 0.05); prevTime = time
 
     const ndcOf = (lm: Landmark) => isFrontCam
       ? { ndcX: (1 - lm.x) * 2 - 1, ndcY: -(lm.y * 2 - 1) }
@@ -233,18 +202,24 @@ async function main(): Promise<void> {
       leftG  ? ndcOf(leftG.indexTip)  : null,
       rightG ? ndcOf(rightG.indexTip) : null,
     ]
+    // Реальные 3D позиции пальцев для hit-test close кнопки
     const fingerWorld = [
       leftLM  ? landmarkToWorld(leftLM[8],  scene.camera, isFrontCam) : null,
       rightLM ? landmarkToWorld(rightLM[8], scene.camera, isFrontCam) : null,
+    ]
+    // Позиции пальцев спроецированные на UI плоскость для кнопок
+    const fingerNear = [
+      leftG  ? landmarkToWorldAtDist(leftG.indexTip,  scene.camera, isFrontCam, 0.65) : null,
+      rightG ? landmarkToWorldAtDist(rightG.indexTip, scene.camera, isFrontCam, 0.65) : null,
     ]
 
     if (handsReady) {
       winMgr.update(time, [leftG, rightG], fingerNDC, fingerWorld)
     }
 
-    taskbar.update(time, scene.camera, fingerWorld[0] ?? fingerWorld[1] ?? null, false)
+    taskbar.update(time, scene.camera, fingerNear[0] ?? fingerNear[1] ?? null, false)
 
-    // ── Руки ────────────────────────────────────────────────────────────────
+    // Руки
     const lms = [
       { lm: leftLM,  wld: leftWLD,  g: leftG,  cursor: leftCursor,  mesh: leftMesh  },
       { lm: rightLM, wld: rightWLD, g: rightG, cursor: rightCursor, mesh: rightMesh },
@@ -255,25 +230,14 @@ async function main(): Promise<void> {
       const vis = !!(lm && g)
       cursor.setVisible(vis && handMode === 'skeleton')
       mesh.setVisible(  vis && handMode === '3d')
-
       let pinchPt: THREE.Vector3 | null = null
       if (vis) {
         const toWorld = (lmk: Landmark) => landmarkToWorld(lmk, scene.camera, isFrontCam)
-
-        if (handMode === 'skeleton') {
-          cursor.updateFromLandmarks(lm!, toWorld, g!.type, g!.pinchStrength, time)
-        } else if (handMode === '3d') {
-          // HandMesh v8: передаём toWorld напрямую
-          mesh.updateFromLandmarks(
-            lm!, wld ?? lm!, new THREE.Vector3(), isFrontCam,
-            g!.type, g!.pinchStrength, time, toWorld
-          )
-        }
-
+        if (handMode === 'skeleton') cursor.updateFromLandmarks(lm!, toWorld, g!.type, g!.pinchStrength, time)
+        else mesh.updateFromLandmarks(lm!, wld ?? lm!, toWorld(lm![0]), isFrontCam, g!.type, g!.pinchStrength, time)
         if (g!.isGun) {
-          const t  = toWorld(lm![4])
-          const ix = toWorld(lm![8])
-          pinchPt  = new THREE.Vector3().addVectors(t, ix).multiplyScalar(0.5)
+          const t = toWorld(lm![4]), ix = toWorld(lm![8])
+          pinchPt = new THREE.Vector3().addVectors(t, ix).multiplyScalar(0.5)
         }
       }
       pinchHands.push({ isPinching: vis && (g?.isGun === true), pinchPoint: pinchPt })
@@ -286,7 +250,6 @@ async function main(): Promise<void> {
 
   setProgress(50, 'Запрос камеры...')
 
-  // ── HandTracker ───────────────────────────────────────────────────────────
   const tracker = new HandTracker()
   try {
     await tracker.init(p => {
@@ -300,7 +263,7 @@ async function main(): Promise<void> {
     videoReady = true
     ;(cameraApp as CameraApp | null)?.setVideo(tracker.getVideoElement())
 
-    tracker.onHands(hands => {
+    tracker.onHands((hands: import('./xr/HandTracker').HandData[]) => {
       leftG = null; rightG = null; leftLM = null; rightLM = null; leftWLD = null; rightWLD = null
       isFrontCam = tracker.isFront()
       for (const hand of hands) {
@@ -326,10 +289,7 @@ async function main(): Promise<void> {
     console.error(err)
     setProgress(100, `⚠️ ${err.message}`)
     if (loaderSub) loaderSub.style.color = '#f87171'
-    setTimeout(() => {
-      loadingScreen.classList.add('hidden')
-      toast('Трекинг рук недоступен', 5000)
-    }, 3000)
+    setTimeout(() => { loadingScreen.classList.add('hidden'); toast('Трекинг рук недоступен', 5000) }, 3000)
   }
 
   stereoToggle.addEventListener('click', () => stereoActive ? settingsHtml.toggle() : toggleVR())

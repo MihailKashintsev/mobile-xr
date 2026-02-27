@@ -137,15 +137,15 @@ export class StereoRenderer {
   }
 
   private syncCams(main:THREE.PerspectiveCamera):void{
-  const half=(this.calib.ipd/1000)/2, vOff=this.calib.verticalOffset, q=main.quaternion
-  this.camL.quaternion.copy(q); this.camR.quaternion.copy(q)
-  // IPD по локальному X камеры (вправо по взгляду), не мировому X
-  const right=new THREE.Vector3(1,0,0).applyQuaternion(q)
-  const up   =new THREE.Vector3(0,1,0).applyQuaternion(q)
-  this.camL.position.copy(main.position).addScaledVector(right,-half).addScaledVector(up, vOff)
-  this.camR.position.copy(main.position).addScaledVector(right, half).addScaledVector(up, vOff)
-  this.camL.updateProjectionMatrix(); this.camR.updateProjectionMatrix()
-}
+    const half=(this.calib.ipd/1000)/2, vOff=this.calib.verticalOffset, q=main.quaternion
+    this.camL.quaternion.copy(q); this.camR.quaternion.copy(q)
+    // IPD по локальному X камеры (вправо по взгляду), не мировому X
+    const right=new THREE.Vector3(1,0,0).applyQuaternion(q)
+    const up   =new THREE.Vector3(0,1,0).applyQuaternion(q)
+    this.camL.position.copy(main.position).addScaledVector(right,-half).addScaledVector(up, vOff)
+    this.camR.position.copy(main.position).addScaledVector(right, half).addScaledVector(up, vOff)
+    this.camL.updateProjectionMatrix(); this.camR.updateProjectionMatrix()
+  }
 
   private applyCalib():void{
     const lc=new THREE.Vector2(0.5,this.calib.lensDistance)

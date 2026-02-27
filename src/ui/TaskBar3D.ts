@@ -15,12 +15,12 @@ export class TaskBar3D {
 
   constructor() {
     this.window = new XRWindow({
-      title:    'MobileXR',
-      width:    1.80,
-      height:   0.50,
+      title:     'MobileXR',
+      width:     1.80,
+      height:    0.50,
       closeable: false,
-      position: new THREE.Vector3(0, -0.40, -0.85),
-      content:  { buttons: [] },
+      position:  new THREE.Vector3(0, -0.40, -0.85),
+      content:   { buttons: [] },
     })
     this.group = this.window.group
   }
@@ -51,13 +51,14 @@ export class TaskBar3D {
 
   update(time: number, camera: THREE.PerspectiveCamera, _fw: THREE.Vector3|null, _p: boolean): void {
     if (!this._initialized) {
+      // Ставим перед камерой снизу — копируем quaternion чтобы смотрело на пользователя
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
-      const down    = new THREE.Vector3(0, -1,  0).applyQuaternion(camera.quaternion)
+      const down    = new THREE.Vector3(0, -1, 0).applyQuaternion(camera.quaternion)
       this.window.group.position
         .copy(camera.position)
         .addScaledVector(forward, 0.85)
         .addScaledVector(down, 0.32)
-      // quaternion НЕ копируем — billboard в WindowManager повернёт к камере
+      this.window.group.quaternion.copy(camera.quaternion)
       this._initialized = true
     }
     this.window.update(time)
