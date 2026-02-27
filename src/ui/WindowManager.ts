@@ -1,16 +1,12 @@
 /**
- * WindowManager + XRWindow v7
+ * WindowManager + XRWindow v8
  *
- * НОВЫЕ ФИЧИ:
- * 1. PINCH-HOLD активация: щипок удерживается 2 сек → круглый прогресс → нажатие
- *    — Анимация: радиальное кольцо на кнопке заполняется за 2 сек
- *    — Если отпустить раньше — сброс
- * 2. WORLD-SPACE окна: position фиксируется при создании в мировых координатах
- *    — Окна НЕ следуют за камерой (голова поворачивается — окна остаются)
- *    — Drag по-прежнему работает (перетащить можно)
- * 3. DEPTH ORDERING: renderOrder по дальности от камеры
- *    — Ближние окна рисуются поверх дальних
- *    — depthTest:true (корректная Z-сортировка между объектами)
+ * ИЗМЕНЕНИЯ:
+ * - Убраны три цветных шарика (traffic lights)
+ * - Кнопки тасктбара: квадратный дизайн, правильный layout для 5 кнопок
+ * - Hold-таймер: убрана привязка к конкретной руке (hi), работает с любой
+ * - Hit-test: проекция пальца на реальную глубину окна
+ * - Drag: кулак (grab), Press: три пальца (three_finger)
  */
 import * as THREE from 'three'
 import type { GestureResult } from '../xr/GestureDetector'
@@ -20,9 +16,11 @@ export interface WinContent { buttons: WinButton[] }
 export interface WinOptions {
   title: string; width?: number; height?: number
   position?: THREE.Vector3; content?: WinContent; closeable?: boolean
+  /** Квадратные иконки вместо прямоугольных кнопок (для тасктбара) */
+  squareButtons?: boolean
 }
 
-// ─── Canvas helpers ────────────────────────────────────────────────────────
+// ─── Canvas helpers ─────────────────────────────────────────────────────────
 function canvasTex(fn:(ctx:CanvasRenderingContext2D,w:number,h:number)=>void,w=512,h=128):THREE.CanvasTexture{
   const c=document.createElement('canvas');c.width=w;c.height=h
   fn(c.getContext('2d')!,w,h);const t=new THREE.CanvasTexture(c);t.needsUpdate=true;return t
@@ -31,59 +29,123 @@ function lighten(c:number,a:number):number{
   return(Math.min(255,((c>>16)&255)+a)<<16)|(Math.min(255,((c>>8)&255)+a)<<8)|(Math.min(255,(c&255)+a))
 }
 
-/** Рисует кнопку с опциональным прогресс-кольцом (0..1) */
+/** Прямоугольная кнопка с опциональным прогресс-кольцом */
 function btnTex(label:string,color:number,hov=false,progress=0):THREE.CanvasTexture{
   return canvasTex((ctx,W,H)=>{
-    const bg=hov?lighten(color,45):color
+    // Фон
+    const bg=hov?lighten(color,40):color
+    const r=18
     ctx.fillStyle=`#${bg.toString(16).padStart(6,'0')}`
-    ctx.beginPath();ctx.roundRect(4,4,W-8,H-8,22);ctx.fill()
+    ctx.beginPath();ctx.roundRect(4,4,W-8,H-8,r);ctx.fill()
+    // Gradient sheen
     if(hov){
-      const g=ctx.createLinearGradient(0,0,0,H*.55)
-      g.addColorStop(0,'rgba(255,255,255,.22)');g.addColorStop(1,'rgba(255,255,255,0)')
-      ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(4,4,W-8,H*.5,22);ctx.fill()
+      const g=ctx.createLinearGradient(0,0,0,H*.5)
+      g.addColorStop(0,'rgba(255,255,255,.20)');g.addColorStop(1,'rgba(255,255,255,0)')
+      ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(4,4,W-8,H*.5,r);ctx.fill()
     }
-    ctx.fillStyle='rgba(255,255,255,.94)'
-    ctx.font=`600 ${Math.round(H*.38)}px -apple-system,sans-serif`
-    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,W/2,H*.44,W-28)
+    // Border glow
+    ctx.strokeStyle=hov?'rgba(120,160,255,.6)':'rgba(80,100,160,.3)'
+    ctx.lineWidth=2
+    ctx.beginPath();ctx.roundRect(4,4,W-8,H-8,r);ctx.stroke()
 
-    // Radial progress ring
+    // Text
+    ctx.fillStyle='rgba(255,255,255,.95)'
+    ctx.font=`600 ${Math.round(H*.34)}px -apple-system,sans-serif`
+    ctx.textAlign='center';ctx.textBaseline='middle'
+    ctx.fillText(label,W/2,progress>0?H*.38:H/2,W-20)
+
+    // Progress ring
     if(progress>0){
-      const cx=W/2,cy=H/2,r=Math.min(W,H)*0.44
-      // Track
-      ctx.strokeStyle='rgba(255,255,255,.18)';ctx.lineWidth=6
-      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke()
-      // Fill
-      const startAngle=-Math.PI/2
-      const endAngle=startAngle+Math.PI*2*progress
-      ctx.strokeStyle='rgba(99,210,255,0.95)';ctx.lineWidth=6
+      const cx=W/2,cy=H/2,rad=Math.min(W,H)*0.40
+      ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=5
+      ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);ctx.stroke()
+      ctx.strokeStyle='rgba(80,200,255,0.95)';ctx.lineWidth=5
       ctx.lineCap='round'
-      ctx.beginPath();ctx.arc(cx,cy,r,startAngle,endAngle);ctx.stroke()
-      // Time left text
+      ctx.beginPath();ctx.arc(cx,cy,rad,-Math.PI/2,-Math.PI/2+Math.PI*2*progress);ctx.stroke()
       const secsLeft=((1-progress)*2).toFixed(1)
-      ctx.fillStyle='rgba(180,230,255,.90)'
-      ctx.font=`500 ${Math.round(H*.24)}px -apple-system,sans-serif`
-      ctx.fillText(secsLeft+'с',cx,H*.80)
+      ctx.fillStyle='rgba(160,220,255,.90)'
+      ctx.font=`500 ${Math.round(H*.22)}px -apple-system,sans-serif`
+      ctx.fillText(secsLeft+'с',cx,H*.76)
     }
   })
 }
 
+/** Квадратная иконка-кнопка для тасктбара */
+function iconTex(label:string,color:number,hov=false,active=false,progress=0):THREE.CanvasTexture{
+  return canvasTex((ctx,W,H)=>{
+    // Фон: тёмный стекломорф
+    const bg = active ? 0x1d4ed8 : hov ? 0x1e3a5f : 0x111827
+    ctx.fillStyle=`#${bg.toString(16).padStart(6,'0')}`
+    ctx.beginPath();ctx.roundRect(6,6,W-12,H-12,20);ctx.fill()
+
+    // Внутренний градиент
+    const g=ctx.createLinearGradient(0,0,0,H*.6)
+    if(active){
+      g.addColorStop(0,'rgba(99,130,255,.30)');g.addColorStop(1,'rgba(30,60,160,.0)')
+    } else {
+      g.addColorStop(0,'rgba(255,255,255,.08)');g.addColorStop(1,'rgba(255,255,255,.0)')
+    }
+    ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(6,6,W-12,H*.55,20);ctx.fill()
+
+    // Border
+    ctx.strokeStyle=active?'rgba(120,160,255,.8)':hov?'rgba(100,140,255,.5)':'rgba(60,80,120,.4)'
+    ctx.lineWidth=active?2.5:1.5
+    ctx.beginPath();ctx.roundRect(6,6,W-12,H-12,20);ctx.stroke()
+
+    // Emoji иконка (большая)
+    // Разбиваем label: первый "слово" = иконка, остальное = текст
+    const parts=label.trim().split(/\s+/)
+    const icon=parts[0]??''
+    const text=parts.slice(1).join(' ')
+
+    ctx.textAlign='center';ctx.textBaseline='middle'
+
+    if(text){
+      // Иконка сверху
+      ctx.font=`${Math.round(H*.35)}px serif`
+      ctx.fillText(icon,W/2,H*.36)
+      // Текст снизу
+      ctx.fillStyle='rgba(200,215,255,.92)'
+      ctx.font=`600 ${Math.round(H*.18)}px -apple-system,sans-serif`
+      ctx.fillText(text,W/2,H*.72,W-12)
+    } else {
+      // Только иконка — крупно
+      ctx.font=`${Math.round(H*.42)}px serif`
+      ctx.fillText(icon,W/2,H/2)
+    }
+
+    // Active dot
+    if(active){
+      ctx.fillStyle='rgba(120,200,255,1)'
+      ctx.beginPath();ctx.arc(W*.82,H*.18,5,0,Math.PI*2);ctx.fill()
+    }
+
+    // Progress ring
+    if(progress>0){
+      const cx=W/2,cy=H/2,rad=Math.min(W,H)*0.44
+      ctx.strokeStyle='rgba(255,255,255,.10)';ctx.lineWidth=4
+      ctx.beginPath();ctx.arc(cx,cy,rad,0,Math.PI*2);ctx.stroke()
+      ctx.strokeStyle='rgba(80,210,255,.95)';ctx.lineWidth=4;ctx.lineCap='round'
+      ctx.beginPath();ctx.arc(cx,cy,rad,-Math.PI/2,-Math.PI/2+Math.PI*2*progress);ctx.stroke()
+    }
+  },256,256)
+}
+
 function titleTex(t:string):THREE.CanvasTexture{
   return canvasTex((ctx,W,H)=>{
-    ctx.fillStyle='rgba(225,232,255,.93)';ctx.font=`700 ${Math.round(H*.55)}px -apple-system,sans-serif`
+    ctx.fillStyle='rgba(210,225,255,.90)';ctx.font=`600 ${Math.round(H*.52)}px -apple-system,sans-serif`
     ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,W/2,H/2,W-24)
   },1024,96)
 }
 
-const C={bg:0x0d1420,titleBg:0x111e35,dragBg:0x0a111e,border:0x2a3a52,accent:0x6366f1}
-const PD=0.024,TH=0.13,BRH=0.10,BTN_D=0.028
+const C={bg:0x080f1a,titleBg:0x0d1528,dragBg:0x060c16,border:0x1e2d45,accent:0x4f6ef7}
+const PD=0.020, TH=0.10, BRH=0.072, BTN_D=0.022
+const HOLD_TIME=2.0
 
-/** Время удержания щипка для активации (секунды) */
-const HOLD_TIME = 2.0
-
-interface BtnEntry{mesh:THREE.Mesh;btn:WinButton;holdProgress:number}
+interface BtnEntry{mesh:THREE.Mesh;btn:WinButton;holdProgress:number;isSquare:boolean}
 interface DragState{win:XRWindow;hi:number;planeZ:number;ox:number;oy:number}
 
-// ─── XRWindow ──────────────────────────────────────────────────────────────
+// ─── XRWindow ────────────────────────────────────────────────────────────────
 export class XRWindow {
   group:THREE.Group
   onClose?:()=>void
@@ -93,12 +155,12 @@ export class XRWindow {
   private closeBtn?:THREE.Mesh
   btnEntries:BtnEntry[]=[]
   private _dragging=false
-  // World-space: НЕ следует за камерой
-  private _worldFixed=true
+  private _squareButtons:boolean
 
   constructor(opts:WinOptions){
     this.W=opts.width??1.5;this.H=opts.height??1.0
     this.closeable=opts.closeable!==false
+    this._squareButtons=opts.squareButtons??false
     this.group=new THREE.Group()
     this.group.position.copy(opts.position??new THREE.Vector3(0,0,-2.0))
     this.build(opts.title,opts.content??{buttons:[]})
@@ -106,102 +168,158 @@ export class XRWindow {
 
   private build(title:string,content:WinContent):void{
     const{W,H}=this
-    // Panel
-    const panel=new THREE.Mesh(new THREE.BoxGeometry(W,H,PD),
-      new THREE.MeshPhysicalMaterial({color:C.bg,transparent:true,opacity:.92,roughness:.08,metalness:.15}))
+
+    // ── Панель ───────────────────────────────────────────────────────────────
+    const panel=new THREE.Mesh(
+      new THREE.BoxGeometry(W,H,PD),
+      new THREE.MeshPhysicalMaterial({
+        color:C.bg,transparent:true,opacity:.94,
+        roughness:.05,metalness:.12,
+      }))
     this.group.add(panel)
-    // Title bar
-    const tb=new THREE.Mesh(new THREE.BoxGeometry(W,TH,PD+.005),
-      new THREE.MeshPhysicalMaterial({color:C.titleBg,roughness:.06,metalness:.18}))
+
+    // ── Title bar ─────────────────────────────────────────────────────────────
+    const tb=new THREE.Mesh(
+      new THREE.BoxGeometry(W,TH,PD+.004),
+      new THREE.MeshPhysicalMaterial({color:C.titleBg,roughness:.04,metalness:.20}))
     tb.position.set(0,H/2-TH/2,.001);this.group.add(tb)
-    // Accent stripe
-    const as=new THREE.Mesh(new THREE.BoxGeometry(W,.003,PD+.008),
+
+    // Accent line под заголовком
+    const al=new THREE.Mesh(
+      new THREE.BoxGeometry(W,.002,PD+.006),
       new THREE.MeshBasicMaterial({color:C.accent}))
-    as.position.set(0,H/2-TH,.003);this.group.add(as)
-    // Title text
-    const tt=new THREE.Mesh(new THREE.PlaneGeometry(W*.76,TH*.68),
+    al.position.set(0,H/2-TH,.002);this.group.add(al)
+
+    // Title text — центрируем
+    const tt=new THREE.Mesh(
+      new THREE.PlaneGeometry(W*.80,TH*.65),
       new THREE.MeshBasicMaterial({map:titleTex(title),transparent:true,depthWrite:false}))
-    tt.position.set(-.02,H/2-TH/2,PD/2+.005);this.group.add(tt)
-    // Traffic lights
-    ;[0xff5f56,0xffbd2e,0x27c93f].forEach((col,i)=>{
-      const d=new THREE.Mesh(new THREE.SphereGeometry(.018,10,8),
-        new THREE.MeshPhysicalMaterial({color:col,emissive:col,emissiveIntensity:.3,roughness:.3}))
-      d.position.set(-W/2+.055+i*.052,H/2-TH/2,PD/2+.012);this.group.add(d)
-    })
-    // Close button
+    tt.position.set(0,H/2-TH/2,PD/2+.004);this.group.add(tt)
+
+    // ── Close button (только если closeable) ─────────────────────────────────
     if(this.closeable){
-      this.closeBtn=new THREE.Mesh(new THREE.BoxGeometry(.075,.052,.022),
-        new THREE.MeshPhysicalMaterial({color:0x991b1b,roughness:.2}))
-      this.closeBtn.position.set(W/2-.048,H/2-TH/2,PD/2+.013)
+      // Маленький квадратный красный крест в правом углу заголовка
+      this.closeBtn=new THREE.Mesh(
+        new THREE.BoxGeometry(.068,.050,.020),
+        new THREE.MeshPhysicalMaterial({color:0x8b0000,roughness:.25,emissive:0x300000,emissiveIntensity:.4}))
+      this.closeBtn.position.set(W/2-.042,H/2-TH/2,PD/2+.011)
       this.group.add(this.closeBtn)
-      const xt=new THREE.Mesh(new THREE.PlaneGeometry(.062,.042),
-        new THREE.MeshBasicMaterial({map:canvasTex((ctx,W,H)=>{
-          ctx.fillStyle='rgba(255,255,255,.9)';ctx.font=`bold ${H*.72}px sans-serif`
-          ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✕',W/2,H/2)
-        },128,64),transparent:true,depthWrite:false}))
-      xt.position.set(W/2-.048,H/2-TH/2,PD/2+.024);this.group.add(xt)
+
+      const xt=new THREE.Mesh(
+        new THREE.PlaneGeometry(.056,.040),
+        new THREE.MeshBasicMaterial({
+          map:canvasTex((ctx,W,H)=>{
+            ctx.fillStyle='rgba(255,200,200,.95)';ctx.font=`bold ${H*.75}px sans-serif`
+            ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✕',W/2,H/2)
+          },96,64),
+          transparent:true,depthWrite:false}))
+      xt.position.set(W/2-.042,H/2-TH/2,PD/2+.021);this.group.add(xt)
     }
-    // Drag bar
-    const db=new THREE.Mesh(new THREE.BoxGeometry(W,BRH,PD+.005),
-      new THREE.MeshPhysicalMaterial({color:C.dragBg,roughness:.15,metalness:.1}))
+
+    // ── Drag bar (снизу) ──────────────────────────────────────────────────────
+    const db=new THREE.Mesh(
+      new THREE.BoxGeometry(W,BRH,PD+.004),
+      new THREE.MeshPhysicalMaterial({color:C.dragBg,roughness:.20,metalness:.08}))
     db.position.set(0,-H/2+BRH/2,.001);this.group.add(db)
-    // Grip dots
-    for(let col=-3;col<=3;col++)for(let row=0;row<2;row++){
-      const d=new THREE.Mesh(new THREE.SphereGeometry(.006,5,4),new THREE.MeshBasicMaterial({color:0x3a4a62}))
-      d.position.set(col*.072,-H/2+.026+row*.022,PD/2+.008);this.group.add(d)
+
+    // Grip lines (три горизонтальных полосы вместо точек)
+    for(let row=0;row<3;row++){
+      const gl=new THREE.Mesh(
+        new THREE.BoxGeometry(W*.35,.002,PD+.006),
+        new THREE.MeshBasicMaterial({color:0x2a3f60,transparent:true,opacity:.7}))
+      gl.position.set(0,-H/2+BRH/2+row*.018-.018,.001);this.group.add(gl)
     }
-    // Glow / border
-    this.glow=new THREE.Mesh(new THREE.BoxGeometry(W+.04,H+.04,PD+.04),
+
+    // ── Glow & border ─────────────────────────────────────────────────────────
+    this.glow=new THREE.Mesh(
+      new THREE.BoxGeometry(W+.03,H+.03,PD+.03),
       new THREE.MeshBasicMaterial({color:C.accent,transparent:true,opacity:0,side:THREE.BackSide,depthWrite:false}))
     this.group.add(this.glow)
+
     this.border=new THREE.LineSegments(
-      new THREE.EdgesGeometry(new THREE.BoxGeometry(W+.007,H+.007,PD+.005)),
-      new THREE.LineBasicMaterial({color:C.border,transparent:true,opacity:.7}))
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(W+.005,H+.005,PD+.004)),
+      new THREE.LineBasicMaterial({color:C.border,transparent:true,opacity:.65}))
     this.group.add(this.border)
-    // Build buttons
+
+    // Buttons
     this._buildButtons(content.buttons)
   }
 
   private _buildButtons(btns:WinButton[]):void{
+    if(btns.length===0)return
     const{W,H}=this
-    const cols=btns.length<=1?1:btns.length<=4?btns.length:Math.ceil(btns.length/2)
-    const pad=.042,btnW=btns.length<=4?(W-pad*2-pad*(btns.length-1))/btns.length:(W-pad*3)/2
-    const top=H/2-TH-pad,bot=-H/2+BRH+pad
-    const rows=Math.ceil(btns.length/cols),gap=.028
-    const btnH=Math.min(.185,(top-bot-gap*(rows-1))/rows)
-    btns.forEach((btn,i)=>{
-      const col=i%cols,row=Math.floor(i/cols)
-      let x:number
-      if(cols===1)x=0
-      else if(btns.length<=4)x=-W/2+pad+col*(btnW+pad)+btnW/2
-      else x=col===0?-(btnW/2+pad/2):(btnW/2+pad/2)
-      const y=top-row*(btnH+gap)-btnH/2
-      const mesh=new THREE.Mesh(new THREE.BoxGeometry(btnW,btnH,BTN_D),
-        new THREE.MeshPhysicalMaterial({map:btnTex(btn.label,btn.color??0x6366f1),transparent:true,opacity:.95,roughness:.12}))
-      mesh.position.set(x,y,PD/2+BTN_D/2);this.group.add(mesh)
-      this.btnEntries.push({mesh,btn,holdProgress:0})
-    })
+    const sq=this._squareButtons
+
+    if(sq){
+      // Квадратные иконки в один ряд — для тасктбара
+      const pad=.028
+      const size=Math.min((W-pad*(btns.length+1))/btns.length, H-TH-BRH-pad*2)
+      const totalW=size*btns.length+pad*(btns.length-1)
+      const startX=-totalW/2
+      const cy=(H/2-TH + (-H/2+BRH))/2  // центр между заголовком и drag bar
+
+      btns.forEach((btn,i)=>{
+        const cx=startX+i*(size+pad)+size/2
+        const mesh=new THREE.Mesh(
+          new THREE.BoxGeometry(size,size,BTN_D),
+          new THREE.MeshPhysicalMaterial({
+            map:iconTex(btn.label,btn.color??0x111827,false,false,0),
+            transparent:true,opacity:.98,roughness:.08
+          }))
+        mesh.position.set(cx,cy,PD/2+BTN_D/2)
+        this.group.add(mesh)
+        this.btnEntries.push({mesh,btn,holdProgress:0,isSquare:true})
+      })
+    } else {
+      // Прямоугольные кнопки сеткой
+      const n=btns.length
+      const cols=n<=2?n:n<=4?2:n<=6?3:3
+      const rows=Math.ceil(n/cols)
+      const pad=.038
+      const btnW=(W-pad*(cols+1))/cols
+      const availH=H-TH-BRH-pad*(rows+1)
+      const btnH=Math.min(.170,availH/rows)
+      const totalH=btnH*rows+pad*(rows-1)
+      const startY=(H/2-TH+(-H/2+BRH))/2+totalH/2-btnH/2
+
+      btns.forEach((btn,i)=>{
+        const col=i%cols, row=Math.floor(i/cols)
+        const x=-W/2+pad+col*(btnW+pad)+btnW/2
+        const y=startY-row*(btnH+pad)
+        const mesh=new THREE.Mesh(
+          new THREE.BoxGeometry(btnW,btnH,BTN_D),
+          new THREE.MeshPhysicalMaterial({
+            map:btnTex(btn.label,btn.color??0x1e293b),
+            transparent:true,opacity:.96,roughness:.10
+          }))
+        mesh.position.set(x,y,PD/2+BTN_D/2)
+        this.group.add(mesh)
+        this.btnEntries.push({mesh,btn,holdProgress:0,isSquare:false})
+      })
+    }
   }
 
-  // ── replaceButtons ────────────────────────────────────────────────────────
   replaceButtons(btns:WinButton[]):void{
     for(const e of this.btnEntries){
       this.group.remove(e.mesh)
       e.mesh.geometry.dispose()
+      ;(e.mesh.material as THREE.MeshPhysicalMaterial).map?.dispose()
       ;(e.mesh.material as THREE.MeshPhysicalMaterial).dispose()
     }
     this.btnEntries=[]
     this._buildButtons(btns)
   }
 
-  // ── Hit tests ─────────────────────────────────────────────────────────────
-  hitButtonByFinger(fingerWorld:THREE.Vector3):BtnEntry|null{
+  // ── Hit tests ────────────────────────────────────────────────────────────
+  hitButtonByFinger(fw:THREE.Vector3):BtnEntry|null{
     this.group.updateWorldMatrix(true,true)
     for(const e of this.btnEntries){
       e.mesh.updateWorldMatrix(true,false)
-      const local=e.mesh.worldToLocal(fingerWorld.clone())
+      const local=e.mesh.worldToLocal(fw.clone())
       const p=(e.mesh.geometry as THREE.BoxGeometry).parameters
-      if(Math.abs(local.x)<p.width/2+.08&&Math.abs(local.y)<p.height/2+.08&&Math.abs(local.z)<p.depth/2+.15)
+      // Увеличенная зона по X/Y, глубокая по Z (глубина не точная)
+      const mx=e.isSquare?.06:.07, my=e.isSquare?.06:.06, mz=.18
+      if(Math.abs(local.x)<p.width/2+mx&&Math.abs(local.y)<p.height/2+my&&Math.abs(local.z)<p.depth/2+mz)
         return e
     }
     return null
@@ -210,14 +328,14 @@ export class XRWindow {
   hitDragBar(wp:THREE.Vector3):boolean{
     this.group.updateWorldMatrix(true,false)
     const l=this.group.worldToLocal(wp.clone())
-    return Math.abs(l.x)<this.W/2+.10&&l.y>-this.H/2-.08&&l.y<-this.H/2+BRH+.08&&Math.abs(l.z)<.25
+    return Math.abs(l.x)<this.W/2+.08&&l.y>-this.H/2-.06&&l.y<-this.H/2+BRH+.06&&Math.abs(l.z)<.20
   }
 
   hitCloseBtn(wp:THREE.Vector3):boolean{
     if(!this.closeable||!this.closeBtn)return false
     this.closeBtn.updateWorldMatrix(true,false)
     const l=this.closeBtn.worldToLocal(wp.clone())
-    return Math.abs(l.x)<.08&&Math.abs(l.y)<.07&&Math.abs(l.z)<.18
+    return Math.abs(l.x)<.08&&Math.abs(l.y)<.07&&Math.abs(l.z)<.16
   }
 
   hitButtonByRay(wp:THREE.Vector3):BtnEntry|null{
@@ -226,18 +344,20 @@ export class XRWindow {
       e.mesh.updateWorldMatrix(true,false)
       const l=e.mesh.worldToLocal(wp.clone())
       const p=(e.mesh.geometry as THREE.BoxGeometry).parameters
-      if(Math.abs(l.x)<p.width/2+.05&&Math.abs(l.y)<p.height/2+.05&&Math.abs(l.z)<.18)return e
+      if(Math.abs(l.x)<p.width/2+.04&&Math.abs(l.y)<p.height/2+.04&&Math.abs(l.z)<.16)return e
     }
     return null
   }
 
   getWorldZ():number{const p=new THREE.Vector3();this.group.getWorldPosition(p);return p.z}
+  getWorldPos():THREE.Vector3{const p=new THREE.Vector3();this.group.getWorldPosition(p);return p}
 
-  /** Обновить прогресс-кольцо на кнопке */
-  updateButtonProgress(entry:BtnEntry, progress:number):void{
+  updateButtonProgress(entry:BtnEntry,progress:number):void{
     entry.holdProgress=progress
     const m=entry.mesh.material as THREE.MeshPhysicalMaterial
-    const t=btnTex(entry.btn.label,entry.btn.color??0x6366f1,true,progress)
+    const t=entry.isSquare
+      ?iconTex(entry.btn.label,entry.btn.color??0x111827,true,false,progress)
+      :btnTex(entry.btn.label,entry.btn.color??0x1e293b,true,progress)
     m.map?.dispose();m.map=t;m.needsUpdate=true
   }
 
@@ -245,14 +365,16 @@ export class XRWindow {
     if(entry.holdProgress===0)return
     entry.holdProgress=0
     const m=entry.mesh.material as THREE.MeshPhysicalMaterial
-    const t=btnTex(entry.btn.label,entry.btn.color??0x6366f1,false,0)
+    const t=entry.isSquare
+      ?iconTex(entry.btn.label,entry.btn.color??0x111827,false,false,0)
+      :btnTex(entry.btn.label,entry.btn.color??0x1e293b,false,0)
     m.map?.dispose();m.map=t;m.needsUpdate=true
   }
 
   setDragHighlight(on:boolean):void{
-    ;(this.glow.material as THREE.MeshBasicMaterial).opacity=on?.14:0
+    ;(this.glow.material as THREE.MeshBasicMaterial).opacity=on?.12:0
     ;(this.border.material as THREE.LineBasicMaterial).color.setHex(on?C.accent:C.border)
-    ;(this.border.material as THREE.LineBasicMaterial).opacity=on?1:.7
+    ;(this.border.material as THREE.LineBasicMaterial).opacity=on?1:.65
   }
 
   setButtonHovered(entry:BtnEntry|null):void{
@@ -260,18 +382,28 @@ export class XRWindow {
       const hov=e===entry
       if(hov!==!!e.mesh.userData.wasHov){
         e.mesh.userData.wasHov=hov
-        if(e.holdProgress>0)return // Don't reset ring texture during hold
+        if(e.holdProgress>0)continue
         const m=e.mesh.material as THREE.MeshPhysicalMaterial
-        const t=btnTex(e.btn.label,e.btn.color??0x6366f1,hov,0)
+        const t=e.isSquare
+          ?iconTex(e.btn.label,e.btn.color??0x111827,hov,false,0)
+          :btnTex(e.btn.label,e.btn.color??0x1e293b,hov,0)
         m.map?.dispose();m.map=t;m.needsUpdate=true
-        e.mesh.scale.z=hov?1.4:1
+        e.mesh.position.z+= hov? .004:-.004
+        e.mesh.scale.z=hov?1.35:1
       }
     }
   }
 
+  /** Обновить иконку квадратной кнопки с active-состоянием */
+  setIconActive(entry:BtnEntry,active:boolean):void{
+    const m=entry.mesh.material as THREE.MeshPhysicalMaterial
+    const t=iconTex(entry.btn.label,entry.btn.color??0x111827,false,active,0)
+    m.map?.dispose();m.map=t;m.needsUpdate=true
+  }
+
   pressButton(entry:BtnEntry):void{
-    entry.mesh.position.z-=.010;entry.mesh.scale.z=.7
-    setTimeout(()=>{entry.mesh.position.z+=.010;entry.mesh.scale.z=1;this.resetButtonProgress(entry)},150)
+    entry.mesh.position.z-=.008;entry.mesh.scale.z=.75
+    setTimeout(()=>{entry.mesh.position.z+=.008;entry.mesh.scale.z=1;this.resetButtonProgress(entry)},140)
     entry.btn.onClick?.()
   }
 
@@ -279,27 +411,21 @@ export class XRWindow {
   set dragging(v:boolean){
     this._dragging=v
     ;(this.border.material as THREE.LineBasicMaterial).color.setHex(v?C.accent:C.border)
-    ;(this.border.material as THREE.LineBasicMaterial).opacity=v?1:.7
+    ;(this.border.material as THREE.LineBasicMaterial).opacity=v?1:.65
   }
 
-  /** Обновление z-порядка по дистанции от камеры */
   updateRenderOrder(camera:THREE.PerspectiveCamera):void{
-    const camPos=camera.position
-    const winPos=new THREE.Vector3();this.group.getWorldPosition(winPos)
-    const dist=camPos.distanceTo(winPos)
-    // Ближние = высокий renderOrder → рисуются поверх
-    const order=Math.round(1000-dist*100)
+    const d=camera.position.distanceTo(this.getWorldPos())
+    const order=Math.round(1000-d*100)
     this.group.traverse((obj:THREE.Object3D)=>{obj.renderOrder=order})
   }
 
-  // Плавающая анимация убрана — окна в world space, не дёргаем
   update(_t:number):void{}
-
   addTo(s:THREE.Scene):void{s.add(this.group)}
   removeFrom(s:THREE.Scene):void{s.remove(this.group)}
 }
 
-// ─── WindowManager ─────────────────────────────────────────────────────────
+// ─── WindowManager ──────────────────────────────────────────────────────────
 export class WindowManager{
   private wins:XRWindow[]=[]
   private scene:THREE.Scene;private camera:THREE.PerspectiveCamera
@@ -308,8 +434,9 @@ export class WindowManager{
   private cdDrag=0
   private ray=new THREE.Raycaster();private plane=new THREE.Plane()
 
-  // Hold state per button (across all windows)
-  private holdState:{entry:BtnEntry;win:XRWindow;hi:number;startTime:number}|null=null
+  // Hold state — без привязки к руке (hi убран из ключа)
+  private holdState:{entry:BtnEntry;win:XRWindow;startTime:number}|null=null
+  private cdPress=0
 
   constructor(scene:THREE.Scene,camera:THREE.PerspectiveCamera){this.scene=scene;this.camera=camera}
   setStereoCamera(cam:THREE.PerspectiveCamera|null):void{this.stereoCamera=cam}
@@ -324,103 +451,116 @@ export class WindowManager{
     return this.ray.ray.intersectPlane(this.plane,t)?t:null
   }
 
+  /** Проецирует NDC пальца на РЕАЛЬНУЮ мировую глубину окна */
+  private fingerAtWinDepth(ndc:{ndcX:number;ndcY:number}, win:XRWindow):THREE.Vector3|null{
+    return this.ndcToPlane(ndc.ndcX, ndc.ndcY, win.getWorldZ())
+  }
+
   update(
     time:number,
     gestures:(GestureResult|null)[],
     fingerNDC:({ndcX:number;ndcY:number}|null)[],
-    fingerWorld:(THREE.Vector3|null)[]
+    _fingerWorld:(THREE.Vector3|null)[]   // оставлен для совместимости
   ):void{
     this.cdDrag=Math.max(0,this.cdDrag-1)
-    // Update render order (depth sorting)
+    this.cdPress=Math.max(0,this.cdPress-1)
     for(const w of this.wins)w.updateRenderOrder(this.camera)
 
-    // ── Drag ──────────────────────────────────────────────────────────────
+    // ── Drag (GRAB) ──────────────────────────────────────────────────────────
     for(let hi=0;hi<2;hi++){
       const g=gestures[hi];const ndc=fingerNDC[hi]
       if(!ndc)continue
-      const pinching=g&&g.type==='grab'&&g.grabStrength>.55  // GRAB = тащить
+      const grabbing=g&&g.type==='grab'&&g.grabStrength>.55
 
-      // GRAB = тащить drag bar
-      if(!this.drag&&pinching&&this.cdDrag===0){
+      if(!this.drag&&grabbing&&this.cdDrag===0){
         for(const win of[...this.wins].reverse()){
-          const pz=win.getWorldZ()
-          const wp=this.ndcToPlane(ndc.ndcX,ndc.ndcY,pz);if(!wp)continue
+          const wp=this.fingerAtWinDepth(ndc,win);if(!wp)continue
           if(win.hitDragBar(wp)){
-            const p=new THREE.Vector3();win.group.getWorldPosition(p)
-            this.drag={win,hi,planeZ:pz,ox:p.x-wp.x,oy:p.y-wp.y}
+            const p=win.getWorldPos()
+            this.drag={win,hi,planeZ:win.getWorldZ(),ox:p.x-wp.x,oy:p.y-wp.y}
             win.dragging=true;break
           }
         }
       }
-      // THREE_FINGER на close btn = закрыть окно
-      if(g&&g.threeFingerStrength>.60&&this.cdDrag===0){
-        const fW=fingerWorld[hi];if(fW){
+
+      // Close via three_finger на кнопку закрыть
+      if(g&&g.threeFingerStrength>.62&&this.cdDrag===0&&this.cdPress===0){
+        const ndc2=fingerNDC[hi];if(ndc2){
           for(const win of[...this.wins].reverse()){
-            if(win.hitCloseBtn(fW)){win.onClose?.();this.cdDrag=25;break}
+            const wp=this.fingerAtWinDepth(ndc2,win);if(!wp)continue
+            if(win.hitCloseBtn(wp)){win.onClose?.();this.cdDrag=30;this.cdPress=30;break}
           }
         }
       }
 
       if(this.drag&&this.drag.hi===hi){
-        if(g&&g.pinchStrength>.32){
+        if(g&&g.grabStrength>.30){
           const pt=this.ndcToPlane(ndc.ndcX,ndc.ndcY,this.drag.planeZ)
           if(pt)this.drag.win.group.position.lerp(
-            new THREE.Vector3(pt.x+this.drag.ox,pt.y+this.drag.oy,this.drag.planeZ),.35)
-        }else if(!g||g.grabStrength<.35){this.drag.win.dragging=false;this.drag=null;this.cdDrag=15}
+            new THREE.Vector3(pt.x+this.drag.ox,pt.y+this.drag.oy,this.drag.planeZ),.38)
+        }else{this.drag.win.dragging=false;this.drag=null;this.cdDrag=12}
       }
     }
 
-    // ── Button hold-to-press ───────────────────────────────────────────────
-    for(const win of this.wins){
-      if(win.dragging)continue
-      let hovEntry:BtnEntry|null=null
-      let dragHov=false
+    // ── Button hold-to-press (THREE_FINGER) ──────────────────────────────────
+    // Определяем лучшую руку для нажатия (с наибольшим threeFingerStrength)
+    let bestG:GestureResult|null=null, bestNDC:{ndcX:number;ndcY:number}|null=null
+    for(let hi=0;hi<2;hi++){
+      const g=gestures[hi]
+      if(g&&g.threeFingerStrength>(bestG?.threeFingerStrength??0)){
+        bestG=g;bestNDC=fingerNDC[hi]
+      }
+    }
 
-      for(let hi=0;hi<2;hi++){
-        const g=gestures[hi];const ndc=fingerNDC[hi];const fW=fingerWorld[hi]
-        if(!ndc||!fW)continue
+    const pressing=bestG&&bestG.threeFingerStrength>.52
+    let anyHit=false
 
-        const wp=this.ndcToPlane(ndc.ndcX,ndc.ndcY,win.getWorldZ())
-        if(wp&&win.hitDragBar(wp))dragHov=true
-
-        // Hover via ray
-        const hEntry=wp?win.hitButtonByRay(wp):null  // wp already uses win depth
-        if(hEntry&&!hovEntry)hovEntry=hEntry
-
-        // ── HOLD-TO-PRESS ──
-        const touching=g&&g.threeFingerStrength>.55  // THREE_FINGER = нажать (hold)
-        // Project finger to window's actual depth for accurate hit test
-        const winZ=win.getWorldZ()
-        const fWAtDepth = ndc ? this.ndcToPlane(ndc.ndcX,ndc.ndcY,winZ) : fW
-        const hitEntry=fWAtDepth?win.hitButtonByFinger(fWAtDepth):null
-
-        if(touching&&hitEntry){
+    if(pressing&&bestNDC&&this.cdPress===0){
+      for(const win of this.wins){
+        if(!win.group.visible||win.dragging)continue
+        const wp=this.fingerAtWinDepth(bestNDC,win);if(!wp)continue
+        const hitEntry=win.hitButtonByFinger(wp)
+        if(hitEntry){
+          anyHit=true
           if(this.holdState&&this.holdState.entry===hitEntry){
-            // Continue hold
+            // Продолжаем hold
             const elapsed=time-this.holdState.startTime
             const progress=Math.min(1,elapsed/HOLD_TIME)
             win.updateButtonProgress(hitEntry,progress)
             if(progress>=1){
-              // FIRE!
               win.pressButton(hitEntry)
               this.holdState=null
-              this.cdDrag=20
+              this.cdPress=25
             }
           } else {
-            // New hold — cancel previous
-            if(this.holdState){
-              this.holdState.win.resetButtonProgress(this.holdState.entry)
-            }
-            this.holdState={entry:hitEntry,win,hi,startTime:time}
+            // Новый hold
+            if(this.holdState)this.holdState.win.resetButtonProgress(this.holdState.entry)
+            this.holdState={entry:hitEntry,win,startTime:time}
             win.updateButtonProgress(hitEntry,0.01)
           }
-        } else if(this.holdState&&this.holdState.hi===hi){
-          // Released — cancel hold
-          this.holdState.win.resetButtonProgress(this.holdState.entry)
-          this.holdState=null
+          break
         }
       }
+    }
 
+    // Если палец убрали — сбрасываем таймер
+    if(!pressing||!anyHit){
+      if(this.holdState){
+        this.holdState.win.resetButtonProgress(this.holdState.entry)
+        this.holdState=null
+      }
+    }
+
+    // ── Hover ────────────────────────────────────────────────────────────────
+    for(const win of this.wins){
+      if(!win.group.visible)continue
+      let hovEntry:BtnEntry|null=null, dragHov=false
+      for(let hi=0;hi<2;hi++){
+        const ndc=fingerNDC[hi];if(!ndc)continue
+        const wp=this.fingerAtWinDepth(ndc,win);if(!wp)continue
+        if(win.hitDragBar(wp))dragHov=true
+        const h=win.hitButtonByRay(wp);if(h&&!hovEntry)hovEntry=h
+      }
       win.setDragHighlight(dragHov)
       win.setButtonHovered(hovEntry)
     }

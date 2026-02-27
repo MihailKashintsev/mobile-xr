@@ -1,5 +1,5 @@
 /**
- * TaskBar3D v9 — квадратные иконки, красивый дизайн
+ * TaskBar3D v9 — красивые иконки, world-space
  */
 import * as THREE from 'three'
 import { XRWindow } from './WindowManager'
@@ -18,13 +18,12 @@ export class TaskBar3D {
 
   constructor() {
     this.window = new XRWindow({
-      title:         'MobileXR',
-      width:         1.80,
-      height:        0.48,
-      closeable:     false,
-      squareButtons: true,
-      position:      new THREE.Vector3(0, -0.40, -0.80),
-      content:       { buttons: [] },
+      title:    'MobileXR',
+      width:    1.80,
+      height:   0.50,
+      closeable: false,
+      position: new THREE.Vector3(0, -0.40, -0.85),
+      content:  { buttons: [] },
     })
     this.group = this.window.group
   }
@@ -42,11 +41,6 @@ export class TaskBar3D {
         onClick: b.onClick,
       }))
     )
-    // Применяем active-состояние на иконки
-    for(const entry of this.window.btnEntries){
-      const btn=this.btns.find(b=>b.label===entry.btn.label)
-      if(btn) this.window.setIconActive(entry, btn.active??false)
-    }
   }
 
   setActive(icon: string, active: boolean): void {

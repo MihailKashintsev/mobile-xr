@@ -241,7 +241,7 @@ async function main(): Promise<void> {
     scene.setupARBackground(tracker.getVideoElement())
     isFrontCam=tracker.isFront()
     videoReady=true
-    if(cameraApp) cameraApp.setVideo(tracker.getVideoElement())
+    ;(cameraApp as CameraApp | null)?.setVideo(tracker.getVideoElement())
 
     tracker.onHands(hands=>{
       leftG=null;rightG=null;leftLM=null;rightLM=null;leftWLD=null;rightWLD=null
@@ -259,7 +259,7 @@ async function main(): Promise<void> {
     settingsHtml.setTracker(tracker)
     settingsHtml.onSwitchCamera=()=>{
       scene.setupARBackground(tracker.getVideoElement())
-      cameraApp?.setVideo(tracker.getVideoElement())
+      ;(cameraApp as CameraApp|null)?.setVideo(tracker.getVideoElement())
     }
     handsReady=true
     setProgress(100,'✅ Готово!')
