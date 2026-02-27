@@ -1,6 +1,3 @@
-/**
- * TaskBar3D v9 — красивые иконки, world-space
- */
 import * as THREE from 'three'
 import { XRWindow } from './WindowManager'
 
@@ -37,7 +34,7 @@ export class TaskBar3D {
     this.window.replaceButtons(
       this.btns.map(b => ({
         label:   b.label,
-        color:   b.active ? 0x1d4ed8 : 0x111827,
+        color:   b.active ? 0x1d4ed8 : 0x1e293b,
         onClick: b.onClick,
       }))
     )
@@ -60,7 +57,7 @@ export class TaskBar3D {
         .copy(camera.position)
         .addScaledVector(forward, 0.85)
         .addScaledVector(down, 0.32)
-      this.window.group.quaternion.copy(camera.quaternion)
+      // quaternion НЕ копируем — billboard в WindowManager повернёт к камере
       this._initialized = true
     }
     this.window.update(time)
