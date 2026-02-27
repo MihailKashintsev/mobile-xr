@@ -14,7 +14,7 @@ import * as THREE from 'three'
 import { XRWindow } from './WindowManager'
 import type { ColorGrading } from './ColorGrading'
 
-export type HandRenderMode = 'skeleton' | '3d'
+export type HandRenderMode = 'skeleton' | '3d' | 'hidden'
 
 export class SettingsXRWindow {
   readonly window: XRWindow
@@ -61,6 +61,11 @@ export class SettingsXRWindow {
         label: hm === '3d' ? '🖐 3D меш ✓' : '🖐 3D меш',
         color: hm === '3d' ? 0x1d4ed8 : 0x1e293b,
         onClick: () => { this._handMode = '3d'; this.onHandMode?.('3d'); this._rebuild() },
+      },
+      {
+        label: hm === 'hidden' ? '🙈 Скрыть ✓' : '🙈 Скрыть руку',
+        color: hm === 'hidden' ? 0x7c3aed : 0x1e293b,
+        onClick: () => { this._handMode = 'hidden'; this.onHandMode?.('hidden'); this._rebuild() },
       },
       // Цветокоррекция
       {

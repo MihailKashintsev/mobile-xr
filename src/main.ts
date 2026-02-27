@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   settingsXR.setColorGrading(cg)
 
   // ─── Руки ─────────────────────────────────────────────────────────────────
-  let handMode: HandRenderMode = 'skeleton'
+  let handMode: HandRenderMode = 'skeleton'  // 'skeleton' | '3d' | 'hidden'
   const leftCursor =new HandCursor(0x06b6d4); const rightCursor=new HandCursor(0xa78bfa)
   const leftMesh   =new HandMesh();            const rightMesh  =new HandMesh()
   leftCursor.addToScene(scene.scene);  rightCursor.addToScene(scene.scene)
@@ -120,10 +120,10 @@ async function main(): Promise<void> {
     if (stereoActive) {
       const sr=scene.getStereoRenderer()!
       settingsHtml.setStereo(sr); winMgr.setStereoCamera(sr.camL)
-      try{(screen.orientation as any)?.lock('landscape')}catch{}
+      try{(screen.orientation as any)?.lock?.('landscape')}catch(_e){/* not supported on this device */}
     } else {
       winMgr.setStereoCamera(null)
-      try{(screen.orientation as any)?.unlock()}catch{}
+      try{(screen.orientation as any)?.unlock?.()}catch(_e){/* not supported */}
     }
   }
 
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
     // Taskbar (HTML overlay) — кнопки работают через touch/click напрямую
     // update() вызываем для совместимости
     const tbFinger = fingerNear[0] ?? fingerNear[1] ?? null
-    const tbPinch  = Math.max(leftG?.pinchStrength??0, rightG?.pinchStrength??0)
+    const tbPinch  = Math.max(leftG?.grabStrength??0, rightG?.grabStrength??0)
     taskbar.update(time, scene.camera, tbFinger, tbPinch > 0.70)
 
     // Hands
@@ -227,19 +227,21 @@ async function main(): Promise<void> {
       const vis=!!(lm&&g)
       cursor.setVisible(vis&&handMode==='skeleton')
       mesh.setVisible(  vis&&handMode==='3d')
+      // 'hidden' = обе системы скрыты
 
       let pinchPt:THREE.Vector3|null=null
       if (vis) {
         const toWorld=(lmk:Landmark)=>landmarkToWorld(lmk,scene.camera,isFrontCam)
         if (handMode==='skeleton') cursor.updateFromLandmarks(lm!,toWorld,g!.type,g!.pinchStrength,time)
         else mesh.updateFromLandmarks(lm!,wld??lm!,toWorld(lm![0]),isFrontCam,g!.type,g!.pinchStrength,time)
-        // Pinch point = midpoint between thumb tip and index tip
-        if (g!.pinchStrength>0.5) {
+        // Particles trigger: GUN жест (кулак + большой + указательный под углом)
+        if (g!.isGun) {
+          // Центр между большим и указательным
           const t=toWorld(lm![4]),i=toWorld(lm![8])
           pinchPt=new THREE.Vector3().addVectors(t,i).multiplyScalar(0.5)
         }
       }
-      pinchHands.push({isPinching:vis&&(g?.type==='pinch'),pinchPoint:pinchPt})
+      pinchHands.push({isPinching:vis&&(g?.isGun===true),pinchPoint:pinchPt})
     }
 
     // Particle effect on pinch
@@ -311,8 +313,10 @@ async function main(): Promise<void> {
 function landmarkToWorld(lm:Landmark,cam:THREE.PerspectiveCamera,isFront:boolean):THREE.Vector3{
   const ndcX=isFront?(1-lm.x)*2-1:lm.x*2-1
   const ndcY=-(lm.y*2-1)
-  // Ближняя проекция для HandMesh (рука должна быть близко к AR фону)
-  const depth=Math.max(0.5,Math.min(1.5,0.9-lm.z*3))
+  // Телефон держат на расстоянии вытянутой руки ~50-80см
+  // lm.z < 0 когда рука приближается к камере
+  // Используем фиксированную глубину + небольшой Z offset
+  const depth=Math.max(0.45,Math.min(0.90, 0.65 + lm.z * 0.5))
   const dir=new THREE.Vector3(ndcX,ndcY,0.5).unproject(cam).sub(cam.position).normalize()
   return cam.position.clone().addScaledVector(dir,depth)
 }

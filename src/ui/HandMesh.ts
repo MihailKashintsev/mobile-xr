@@ -139,8 +139,8 @@ export class HandMesh{
       this.nails[fi].quaternion.setFromUnitVectors(UP,dir)
     }
 
-    // Glow on pinch
-    const emI=(gesture==='pinch'?pinchStrength:0)*0.5
+    // Glow on three_finger press
+    const emI=(gesture==='three_finger'?pinchStrength:0)*0.5
     for(const cap of this.caps.flat())(cap.material as THREE.MeshPhysicalMaterial).emissiveIntensity=emI
     for(const j of this.joints)(j.material as THREE.MeshPhysicalMaterial).emissiveIntensity=emI*1.2
     const[m4,m8,m12]=[pts[4],pts[8],pts[12]]

@@ -163,7 +163,7 @@ export class HandCursor {
 
       // Яркость костей зависит от жеста
       const mat = this.boneLines[bi].material as THREE.LineBasicMaterial
-      mat.opacity = gesture === 'pinch' ? 0.75 : gesture === 'open' ? 0.45 : 0.55
+      mat.opacity = gesture === 'three_finger' ? 0.75 : gesture === 'open' ? 0.45 : 0.55
     }
 
     // ── Суставы ───────────────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ export class HandCursor {
       const mat = this.jointMeshes[i].material as THREE.MeshPhysicalMaterial
 
       // Пульсация кончиков при щипке
-      if (TIPS.includes(i) && gesture === 'pinch') {
+      if (TIPS.includes(i) && gesture === 'three_finger') {
         mat.emissiveIntensity = 0.5 + Math.sin(time * 10) * 0.3
         this.jointMeshes[i].scale.setScalar(1 + pinchStrength * 0.3)
       } else {

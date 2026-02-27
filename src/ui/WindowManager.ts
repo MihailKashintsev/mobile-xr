@@ -338,17 +338,25 @@ export class WindowManager{
     for(let hi=0;hi<2;hi++){
       const g=gestures[hi];const ndc=fingerNDC[hi]
       if(!ndc)continue
-      const pinching=g&&g.type==='pinch'&&g.pinchStrength>.65
+      const pinching=g&&g.type==='grab'&&g.grabStrength>.55  // GRAB = тащить
 
+      // GRAB = тащить drag bar
       if(!this.drag&&pinching&&this.cdDrag===0){
         for(const win of[...this.wins].reverse()){
           const pz=win.getWorldZ()
           const wp=this.ndcToPlane(ndc.ndcX,ndc.ndcY,pz);if(!wp)continue
-          if(win.hitCloseBtn(wp)){win.onClose?.();this.cdDrag=25;break}
           if(win.hitDragBar(wp)){
             const p=new THREE.Vector3();win.group.getWorldPosition(p)
             this.drag={win,hi,planeZ:pz,ox:p.x-wp.x,oy:p.y-wp.y}
             win.dragging=true;break
+          }
+        }
+      }
+      // THREE_FINGER на close btn = закрыть окно
+      if(g&&g.threeFingerStrength>.60&&this.cdDrag===0){
+        const fW=fingerWorld[hi];if(fW){
+          for(const win of[...this.wins].reverse()){
+            if(win.hitCloseBtn(fW)){win.onClose?.();this.cdDrag=25;break}
           }
         }
       }
@@ -358,7 +366,7 @@ export class WindowManager{
           const pt=this.ndcToPlane(ndc.ndcX,ndc.ndcY,this.drag.planeZ)
           if(pt)this.drag.win.group.position.lerp(
             new THREE.Vector3(pt.x+this.drag.ox,pt.y+this.drag.oy,this.drag.planeZ),.35)
-        }else{this.drag.win.dragging=false;this.drag=null;this.cdDrag=15}
+        }else if(!g||g.grabStrength<.35){this.drag.win.dragging=false;this.drag=null;this.cdDrag=15}
       }
     }
 
@@ -376,12 +384,15 @@ export class WindowManager{
         if(wp&&win.hitDragBar(wp))dragHov=true
 
         // Hover via ray
-        const hEntry=wp?win.hitButtonByRay(wp):null
+        const hEntry=wp?win.hitButtonByRay(wp):null  // wp already uses win depth
         if(hEntry&&!hovEntry)hovEntry=hEntry
 
         // ── HOLD-TO-PRESS ──
-        const touching=g&&g.pinchStrength>.60
-        const hitEntry=fW?win.hitButtonByFinger(fW):null
+        const touching=g&&g.threeFingerStrength>.55  // THREE_FINGER = нажать (hold)
+        // Project finger to window's actual depth for accurate hit test
+        const winZ=win.getWorldZ()
+        const fWAtDepth = ndc ? this.ndcToPlane(ndc.ndcX,ndc.ndcY,winZ) : fW
+        const hitEntry=fWAtDepth?win.hitButtonByFinger(fWAtDepth):null
 
         if(touching&&hitEntry){
           if(this.holdState&&this.holdState.entry===hitEntry){
