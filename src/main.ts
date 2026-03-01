@@ -50,77 +50,6 @@ function landmarkToWorld(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: bo
   return cam.position.clone().addScaledVector(dir, depth)
 }
 
-function landmarkToWorldAtDist(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: boolean, dist: number): THREE.Vector3 {
-  const ndcX = isFront ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
-  const ndcY  = -(lm.y * 2 - 1)
-  const dir = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam).sub(cam.position).normalize()
-  return cam.position.clone().addScaledVector(dir, dist)
-}
-
-// ── MindAR интеграция ────────────────────────────────────────────────────────
-// MindAR управляет своей камерой и рендерером через CDN
-// Нам нужно только синхронизировать нашу сцену с MindAR
-let mindARActive  = false
-let mindARFound   = false
-let mindARLostAt  = 0
-let mindARAnchor: THREE.Group | null = null   // якорь в пространстве маркера
-
-async function initMindAR(scene: THREE.Scene): Promise<boolean> {
-  const MindARThree = (window as any).MindARThree
-  if (!MindARThree) {
-    toast('⚠️ MindAR не загружен — маркер недоступен')
-    return false
-  }
-
-  // Проверяем что .mind файл есть
-  const mindFile = '/targets/marker.mind'
-
-  const mindar = new MindARThree({
-    container:      document.querySelector('#app')!,
-    imageTargetSrc: mindFile,
-    maxTrack:       1,
-    uiLoading:      'no',
-    uiScanning:     'no',
-    uiError:        'no',
-  })
-
-  const { renderer: mRend, scene: mScene, camera: mCam } = mindar.getThree()
-
-  // Добавляем нашу сцену в MindAR сцену
-  mScene.add(scene)
-
-  // Якорь — Three.js группа привязанная к маркеру
-  mindARAnchor = new THREE.Group()
-  const target = mindar.addAnchor(0)
-  target.group.add(mindARAnchor)
-
-  target.onTargetFound = () => {
-    mindARFound  = true
-    mindARLostAt = 0
-    toast('✅ Маркер найден — окна зафиксированы!')
-  }
-  target.onTargetLost = () => {
-    mindARFound  = false
-    mindARLostAt = performance.now()
-  }
-
-  try {
-    await mindar.start()
-    mindARActive = true
-
-    // MindAR рендерит сам в своём RAF — подключаемся к нему
-    mRend.setAnimationLoop(() => {
-      mRend.render(mScene, mCam)
-    })
-
-    return true
-  } catch (e) {
-    console.error('[MindAR]', e)
-    toast('⚠️ MindAR ошибка: ' + (e as Error).message)
-    return false
-  }
-}
-
 async function main(): Promise<void> {
   const vb = document.getElementById('version-badge')
   if (vb) vb.textContent = `v${APP_VERSION}`
@@ -162,19 +91,6 @@ async function main(): Promise<void> {
   let stereoActive = false
 
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
-    // Если MindAR активен и маркер был виден — ставим относительно маркера
-    const recentlyFound = mindARFound || (mindARLostAt > 0 && performance.now() - mindARLostAt < 3000)
-    if (mindARActive && mindARAnchor && recentlyFound) {
-      // Позиция относительно якоря маркера
-      win.group.position.set(offsetX, offsetY, -dist * 0.3)
-      win.group.quaternion.identity()
-      // Добавляем в якорь а не в сцену
-      winMgr.remove(win)
-      mindARAnchor.add(win.group)
-      winMgr.add(win)
-      return
-    }
-    // Fallback — перед камерой
     const cam = scene.camera
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
     const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
@@ -244,24 +160,9 @@ async function main(): Promise<void> {
     toast('✕ Все окна закрыты')
   }
 
-  // Кнопка AR маркера
-  async function toggleMindAR(): Promise<void> {
-    if (mindARActive) {
-      toast('AR маркер уже активен — наведи камеру на маркер')
-      return
-    }
-    toast('🔍 Запуск AR... наведи на маркер')
-    const ok = await initMindAR(scene.scene)
-    if (ok) {
-      taskbar.setActive('📍', true)
-      toast('📍 AR активен! Наведи камеру на распечатанный маркер')
-    }
-  }
-
   taskbar.setButtons([
     { label: '⚙️ Настройки', onClick: openSettingsXR },
     { label: '📷 Камера',    onClick: openCamera      },
-    { label: '📍 AR маркер', onClick: toggleMindAR    },
     { label: '🏠 Комната',   onClick: toggleRoom      },
     { label: '👓 VR',        onClick: toggleVR        },
     { label: '✕ Закрыть',   onClick: closeAllWindows },
@@ -323,11 +224,7 @@ async function main(): Promise<void> {
     }
 
     particles.update(dt, pinchHands)
-
-    // Рендерим только если MindAR не активен (иначе MindAR рендерит сам)
-    if (!mindARActive) {
-      cg.renderWithGrading(() => scene.render())
-    }
+    cg.renderWithGrading(() => scene.render())
   }
   animate()
 
