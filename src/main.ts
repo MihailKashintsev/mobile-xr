@@ -16,6 +16,7 @@ import { PinchParticles }   from './ui/PinchParticles'
 import { AutoUpdater }      from './updater/AutoUpdater'
 import { ColorGrading }     from './ui/ColorGrading'
 import * as THREE           from 'three'
+import { GyroCamera }        from './xr/GyroCamera'
 
 const APP_VERSION: string = __APP_VERSION__
 
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
   const taskbar = new TaskBar3D()
   const settingsHtml = new SettingsWindow()
   const settingsXR   = new SettingsXRWindow()
+  const gyro    = new GyroCamera(scene.camera)
   const vrRoom  = new VRRoom()
   const particles = new PinchParticles(scene.scene)
   settingsHtml.version = APP_VERSION
@@ -102,29 +104,12 @@ async function main(): Promise<void> {
   let stereoActive = false
 
   // Размещает окно перед камерой в текущем направлении взгляда
-  /** Поворот компенсирующий landscape ориентацию экрана */
-  function screenQuaternion(): THREE.Quaternion {
-    const q = new THREE.Quaternion()
-    const angle = (screen.orientation?.angle ?? window.orientation ?? 0) as number
-    // landscape-left (90°) → компенсируем -90° по Z
-    // landscape-right (270° или -90°) → компенсируем +90° по Z
-    if (angle === 90)  q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2)
-    if (angle === 270 || angle === -90) q.setFromAxisAngle(new THREE.Vector3(0, 0, 1),  Math.PI / 2)
-    return q
-  }
-
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
     const cam = scene.camera
-    const q   = screenQuaternion()
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
-    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(q)
-    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(q)
-    win.group.position
-      .copy(cam.position)
-      .addScaledVector(fwd, dist)
-      .addScaledVector(rgt, offsetX)
-      .addScaledVector(up,  offsetY)
-    win.group.quaternion.copy(q)
+    // Камера Three.js всегда смотрит вдоль -Z в world space (нет гироскопа)
+    // Окно просто ставим перед камерой с identity rotation — оно будет смотреть на пользователя
+    win.group.position.set(offsetX, offsetY, -dist)
+    win.group.quaternion.identity()
   }
 
   function openCamera(): void {
@@ -256,6 +241,7 @@ async function main(): Promise<void> {
     }
 
     particles.update(dt, pinchHands)
+    gyro.update()
     cg.renderWithGrading(() => scene.render())
   }
   animate()
@@ -303,6 +289,15 @@ async function main(): Promise<void> {
     if (loaderSub) loaderSub.style.color = '#f87171'
     setTimeout(() => { loadingScreen.classList.add('hidden'); toast('Трекинг рук недоступен', 5000) }, 3000)
   }
+
+  // Запрашиваем гироскоп при первом тапе
+  let gyroRequested = false
+  document.addEventListener('click', async () => {
+    if (gyroRequested) return
+    gyroRequested = true
+    const ok = await gyro.enable()
+    if (ok) toast('🧭 Гироскоп включён — тапни ещё раз для сброса направления')
+  }, { once: false })
 
   stereoToggle.addEventListener('click', () => stereoActive ? settingsHtml.toggle() : toggleVR())
 
