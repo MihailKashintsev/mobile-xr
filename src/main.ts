@@ -102,17 +102,29 @@ async function main(): Promise<void> {
   let stereoActive = false
 
   // Размещает окно перед камерой в текущем направлении взгляда
+  /** Поворот компенсирующий landscape ориентацию экрана */
+  function screenQuaternion(): THREE.Quaternion {
+    const q = new THREE.Quaternion()
+    const angle = (screen.orientation?.angle ?? window.orientation ?? 0) as number
+    // landscape-left (90°) → компенсируем -90° по Z
+    // landscape-right (270° или -90°) → компенсируем +90° по Z
+    if (angle === 90)  q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2)
+    if (angle === 270 || angle === -90) q.setFromAxisAngle(new THREE.Vector3(0, 0, 1),  Math.PI / 2)
+    return q
+  }
+
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
     const cam = scene.camera
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
-    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
-    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
+    const q   = screenQuaternion()
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(q)
+    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(q)
     win.group.position
       .copy(cam.position)
       .addScaledVector(fwd, dist)
       .addScaledVector(rgt, offsetX)
       .addScaledVector(up,  offsetY)
-    win.group.quaternion.copy(cam.quaternion)
+    win.group.quaternion.copy(q)
   }
 
   function openCamera(): void {

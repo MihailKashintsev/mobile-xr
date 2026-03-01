@@ -49,16 +49,24 @@ export class TaskBar3D {
 
   addToScene(s: THREE.Scene): void { this.window.addTo(s) }
 
+  private screenQ(): THREE.Quaternion {
+    const q = new THREE.Quaternion()
+    const angle = (screen.orientation?.angle ?? (window as any).orientation ?? 0) as number
+    if (angle === 90)               q.setFromAxisAngle(new THREE.Vector3(0,0,1), -Math.PI/2)
+    if (angle === 270 || angle === -90) q.setFromAxisAngle(new THREE.Vector3(0,0,1),  Math.PI/2)
+    return q
+  }
+
   update(time: number, camera: THREE.PerspectiveCamera, _fw: THREE.Vector3|null, _p: boolean): void {
     if (!this._initialized) {
-      // Ставим перед камерой снизу — копируем quaternion чтобы смотрело на пользователя
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
-      const down    = new THREE.Vector3(0, -1, 0).applyQuaternion(camera.quaternion)
+      const q       = this.screenQ()
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+      const down    = new THREE.Vector3(0, -1,  0).applyQuaternion(q)
       this.window.group.position
         .copy(camera.position)
         .addScaledVector(forward, 0.85)
         .addScaledVector(down, 0.32)
-      this.window.group.quaternion.copy(camera.quaternion)
+      this.window.group.quaternion.copy(q)
       this._initialized = true
     }
     this.window.update(time)
