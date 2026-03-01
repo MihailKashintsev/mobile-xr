@@ -1,62 +1,39 @@
-/**
- * GyroCamera — поворот камеры Three.js по гироскопу устройства
- * Использует DeviceOrientation API (работает на iOS13+ и Android Chrome)
- */
 import * as THREE from 'three'
 
 export class GyroCamera {
-  private camera: THREE.PerspectiveCamera
+  private camera:  THREE.PerspectiveCamera
   private enabled = false
-  private baseQ   = new THREE.Quaternion()  // "вперёд" при recenter
+  private baseQ   = new THREE.Quaternion()
   private curQ    = new THREE.Quaternion()
-  // Поворот чтобы перевести из системы устройства в систему Three.js
-  // Устройство: X=right, Y=up, Z=к экрану → Three.js: X=right, Y=up, Z=от экрана
-  private readonly worldQ = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5))
   private onEvent = (_e: DeviceOrientationEvent) => {}
 
-  constructor(camera: THREE.PerspectiveCamera) {
-    this.camera = camera
-  }
+  constructor(camera: THREE.PerspectiveCamera) { this.camera = camera }
 
   async enable(): Promise<boolean> {
-    // iOS 13+ требует явного разрешения
     if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
       try {
         const perm = await (DeviceOrientationEvent as any).requestPermission()
         if (perm !== 'granted') return false
-      } catch {
-        return false
-      }
+      } catch { return false }
     }
 
     this.onEvent = (e: DeviceOrientationEvent) => {
-      if (e.alpha == null) return
+      if (e.alpha == null || e.beta == null || e.gamma == null) return
+
       const alpha = THREE.MathUtils.degToRad(e.alpha ?? 0)
       const beta  = THREE.MathUtils.degToRad(e.beta  ?? 0)
       const gamma = THREE.MathUtils.degToRad(e.gamma ?? 0)
 
-      // Euler ZXY → Quaternion (порядок как в DeviceOrientation)
-      const q = new THREE.Quaternion()
-      const ea = new THREE.Euler(beta, alpha, -gamma, 'YXZ')
-      q.setFromEuler(ea)
-
-      // Применяем мировой поворот (координатная система устройства → Three.js)
-      this.curQ.copy(this.worldQ).multiply(q)
-
-      // Учитываем landscape: поворот экрана на -90° по Z
-      const angle = screen.orientation?.angle ?? 0
-      if (angle === 90 || angle === -270) {
-        const lq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
-        this.curQ.multiply(lq)
-      } else if (angle === 270 || angle === -90) {
-        const lq = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2)
-        this.curQ.multiply(lq)
-      }
+      // Стандартная формула DeviceOrientation → Three.js camera quaternion
+      // Порядок Euler: 'YXZ' соответствует yaw-pitch-roll устройства
+      const euler = new THREE.Euler(beta, -alpha, -gamma, 'YXZ')
+      this.curQ.setFromEuler(euler)
     }
 
     window.addEventListener('deviceorientation', this.onEvent)
     this.enabled = true
-    this.recenter()
+    // Ждём первые данные перед recenter
+    setTimeout(() => this.recenter(), 500)
     return true
   }
 
@@ -66,15 +43,12 @@ export class GyroCamera {
     this.camera.quaternion.identity()
   }
 
-  /** Сбрасывает "вперёд" на текущее направление */
   recenter(): void {
     this.baseQ.copy(this.curQ).invert()
   }
 
-  /** Вызывать каждый кадр в animate() */
   update(): void {
     if (!this.enabled) return
-    // Применяем: baseQ (recenter) * curQ
     this.camera.quaternion.copy(this.baseQ).multiply(this.curQ)
   }
 
