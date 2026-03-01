@@ -31,9 +31,9 @@ export class GyroCamera {
 
     this.onEvent = (e: DeviceOrientationEvent) => {
       if (e.alpha == null) return
-      const alpha = THREE.MathUtils.degToRad(e.alpha)  // Z (yaw)
-      const beta  = THREE.MathUtils.degToRad(e.beta)   // X (pitch)
-      const gamma = THREE.MathUtils.degToRad(e.gamma)  // Y (roll)
+      const alpha = THREE.MathUtils.degToRad(e.alpha ?? 0)
+      const beta  = THREE.MathUtils.degToRad(e.beta  ?? 0)
+      const gamma = THREE.MathUtils.degToRad(e.gamma ?? 0)
 
       // Euler ZXY → Quaternion (порядок как в DeviceOrientation)
       const q = new THREE.Quaternion()

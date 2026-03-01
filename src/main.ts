@@ -290,14 +290,30 @@ async function main(): Promise<void> {
     setTimeout(() => { loadingScreen.classList.add('hidden'); toast('Трекинг рук недоступен', 5000) }, 3000)
   }
 
-  // Запрашиваем гироскоп при первом тапе
-  let gyroRequested = false
-  document.addEventListener('click', async () => {
-    if (gyroRequested) return
-    gyroRequested = true
-    const ok = await gyro.enable()
-    if (ok) toast('🧭 Гироскоп включён — тапни ещё раз для сброса направления')
-  }, { once: false })
+  // Кнопка гироскопа в HUD
+  const gyroBtn = document.getElementById('gyro-btn')
+  if (gyroBtn) {
+    gyroBtn.addEventListener('click', async () => {
+      if (gyro.isEnabled()) {
+        gyro.recenter()
+        // Перепозиционируем окна по текущему направлению взгляда
+        spawnInFront(taskbar.window, 0, -0.32, 0.85)
+        toast('🧭 Центр сброшен')
+      } else {
+        const ok = await gyro.enable()
+        if (ok) {
+          gyroBtn.textContent = '🧭 Сброс'
+          toast('🧭 Гироскоп включён!')
+          // Ждём первый кадр гироскопа, потом перепозиционируем
+          setTimeout(() => {
+            spawnInFront(taskbar.window, 0, -0.32, 0.85)
+          }, 300)
+        } else {
+          toast('⚠️ Гироскоп недоступен')
+        }
+      }
+    })
+  }
 
   stereoToggle.addEventListener('click', () => stereoActive ? settingsHtml.toggle() : toggleVR())
 

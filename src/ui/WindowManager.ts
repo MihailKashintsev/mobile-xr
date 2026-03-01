@@ -271,7 +271,17 @@ export class WindowManager{
   update(time:number,gestures:(GestureResult|null)[],fingerNDC:({ndcX:number;ndcY:number}|null)[],fingerWorld:(THREE.Vector3|null)[]):void{
     this.cdDrag=Math.max(0,this.cdDrag-1)
     this.cdClose=Math.max(0,this.cdClose-1)
-    for(const w of this.wins)w.updateRenderOrder(this.camera)
+    // Depth sort + billboard через up-вектор камеры (без gimbal lock)
+    for(const w of this.wins){
+      w.updateRenderOrder(this.camera)
+      if(!w.group.visible)continue
+      const wp=new THREE.Vector3();w.group.getWorldPosition(wp)
+      const dir=new THREE.Vector3().subVectors(this.camera.position,wp)
+      if(dir.lengthSq()<0.0001)continue
+      const up=new THREE.Vector3(0,1,0).applyQuaternion(this.camera.quaternion)
+      const m=new THREE.Matrix4().lookAt(wp,this.camera.position,up)
+      w.group.quaternion.setFromRotationMatrix(m)
+    }
 
     // ── CLOSE ──
     if(this.cdClose===0){
