@@ -104,18 +104,22 @@ async function main(): Promise<void> {
   let stereoActive = false
 
   // Размещает окно перед камерой в текущем направлении взгляда
+  // Приложение ВСЕГДА в landscape → компенсируем поворот экрана -90° по Z
+  const LANDSCAPE_Q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), -Math.PI/2)
+
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
     const cam = scene.camera
-    // Используем текущий quaternion камеры (с гироскопом или без)
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
-    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
-    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
+    // Итоговый поворот = quaternion камеры + компенсация landscape
+    const q   = cam.quaternion.clone().multiply(LANDSCAPE_Q)
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(q)
+    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(q)
     win.group.position
       .copy(cam.position)
       .addScaledVector(fwd, dist)
       .addScaledVector(rgt, offsetX)
       .addScaledVector(up,  offsetY)
-    win.group.quaternion.copy(cam.quaternion)
+    win.group.quaternion.copy(q)
   }
 
   function openCamera(): void {

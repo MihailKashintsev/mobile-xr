@@ -51,13 +51,16 @@ export class TaskBar3D {
 
   update(time: number, camera: THREE.PerspectiveCamera, _fw: THREE.Vector3|null, _p: boolean): void {
     if (!this._initialized) {
-      const fwd  = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
-      const down = new THREE.Vector3(0, -1,  0).applyQuaternion(camera.quaternion)
+      // Компенсация landscape: всегда -90° по Z
+      const landscapeQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), -Math.PI/2)
+      const q    = camera.quaternion.clone().multiply(landscapeQ)
+      const fwd  = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+      const down = new THREE.Vector3(0, -1,  0).applyQuaternion(q)
       this.window.group.position
         .copy(camera.position)
         .addScaledVector(fwd,  0.85)
         .addScaledVector(down, 0.32)
-      this.window.group.quaternion.copy(camera.quaternion)
+      this.window.group.quaternion.copy(q)
       this._initialized = true
     }
     this.window.update(time)
