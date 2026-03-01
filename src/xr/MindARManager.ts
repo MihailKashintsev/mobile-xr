@@ -1,88 +1,101 @@
 /**
- * MindARManager — интеграция MindAR.js с Three.js
- *
- * MindAR отслеживает изображение-маркер через камеру и возвращает
- * матрицу трансформации → мы прикрепляем к ней якорный объект.
- * Окна Three.js привязаны к этому якорю → висят в реальном пространстве.
- *
- * Маркер: любое чёткое изображение (логотип, QR-код и т.д.)
- * Скомпилировать .mind файл: https://hiukim.github.io/mind-ar-js-doc/tools/compile
+ * MindARManager v2
+ * 
+ * MindAR загружается динамически через CDN только когда пользователь
+ * нажимает кнопку AR. Никакого npm пакета — только CDN скрипт.
+ * 
+ * Как использовать:
+ * 1. Скомпилируй marker.mind на https://hiukim.github.io/mind-ar-js-doc/tools/compile
+ * 2. Положи в public/targets/marker.mind
+ * 3. Нажми кнопку AR в тасктбаре
  */
 import * as THREE from 'three'
 
-// MindAR загружается через CDN в index.html как глобальная переменная
-declare const MINDAR: any
+const MINDAR_CDN = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
+
+let scriptLoaded = false
+
+async function loadMindARScript(): Promise<void> {
+  if (scriptLoaded || (window as any).MindARThree) {
+    scriptLoaded = true; return
+  }
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = MINDAR_CDN
+    s.onload  = () => { scriptLoaded = true; resolve() }
+    s.onerror = () => reject(new Error('Failed to load MindAR from CDN'))
+    document.head.appendChild(s)
+  })
+}
 
 export class MindARManager {
-  private mindar:  any = null
-  private anchor:  THREE.Group | null = null
-  private _active  = false
-  private _found   = false
-  private _lostAt  = 0
+  private mindar:   any     = null
+  private anchor:   THREE.Group | null = null
+  private _active   = false
+  private _found    = false
+  private _lostAt   = 0
+  private _container: HTMLElement | null = null
 
-  /** Инициализирует MindAR и возвращает якорную группу Three.js.
-   *  Все окна которые нужно "приклеить" к реальному миру — добавляй в anchor.
-   *  После нахождения маркера они появятся в правильном месте.
-   */
-  async init(
-    renderer:  THREE.WebGLRenderer,
+  get isActive():  boolean { return this._active }
+  get isFound():   boolean { return this._found  }
+  get anchor3D():  THREE.Group | null { return this.anchor }
+
+  /** Возвращает true если маркер был виден недавно (буфер 2с) */
+  get isVisible(): boolean {
+    return this._found || (this._lostAt > 0 && performance.now() - this._lostAt < 2000)
+  }
+
+  async start(
+    container: HTMLElement,
     scene:     THREE.Scene,
-    camera:    THREE.PerspectiveCamera,
-    mindFile:  string = '/targets/marker.mind'
-  ): Promise<THREE.Group> {
-    if (!window.hasOwnProperty('MINDAR') && !(window as any).MindARThree) {
-      throw new Error('MindAR not loaded. Add CDN script to index.html')
-    }
+    mindFile = '/mobile-xr/targets/marker.mind'
+  ): Promise<{ scene: THREE.Scene; camera: THREE.PerspectiveCamera; renderer: THREE.WebGLRenderer }> {
+    await loadMindARScript()
 
     const MindARThree = (window as any).MindARThree
+    if (!MindARThree) throw new Error('MindARThree not available after script load')
+
+    this._container = container
 
     this.mindar = new MindARThree({
-      container:    renderer.domElement.parentElement ?? document.body,
+      container,
       imageTargetSrc: mindFile,
-      maxTrack:     1,
-      uiLoading:    'no',
-      uiScanning:   'no',
-      uiError:      'no',
+      maxTrack:       1,
+      uiLoading:      'no',
+      uiScanning:     'no',
+      uiError:        'no',
     })
 
-    // MindAR создаёт свой renderer/camera — берём их
-    const { renderer: mrend, scene: mscene, camera: mcam } = this.mindar.getThree()
+    const { renderer, scene: mScene, camera } = this.mindar.getThree()
 
-    // Синхронизируем наш рендерер с MindAR
-    renderer.domElement.style.display = 'none'
+    // Добавляем нашу Three.js сцену в MindAR сцену
+    mScene.add(scene)
 
+    // Создаём якорь — Three.js группа привязанная к маркеру в реальном пространстве
     this.anchor = new THREE.Group()
     const target = this.mindar.addAnchor(0)
     target.group.add(this.anchor)
 
     target.onTargetFound = () => {
-      this._found = true
-      console.log('[MindAR] Marker found')
+      this._found  = true
+      this._lostAt = 0
     }
     target.onTargetLost = () => {
-      this._found = false
+      this._found  = false
       this._lostAt = performance.now()
-      console.log('[MindAR] Marker lost')
     }
 
     await this.mindar.start()
     this._active = true
 
-    // MindAR рендерит сам — подключаем наши объекты к его сцене
-    mscene.add(scene)
-
-    return this.anchor
-  }
-
-  get isActive(): boolean  { return this._active }
-  get isFound():  boolean  { return this._found  }
-
-  /** Маркер недавно был виден (даём 2 сек буфера после потери) */
-  get isVisible(): boolean {
-    return this._found || (performance.now() - this._lostAt < 2000)
+    return { renderer, scene: mScene, camera }
   }
 
   stop(): void {
-    if (this.mindar) { this.mindar.stop(); this._active = false }
+    if (this.mindar) {
+      try { this.mindar.stop() } catch {}
+      this._active = false
+      this._found  = false
+    }
   }
 }

@@ -15,6 +15,7 @@ import { CameraApp }        from './ui/CameraApp'
 import { PinchParticles }   from './ui/PinchParticles'
 import { AutoUpdater }      from './updater/AutoUpdater'
 import { ColorGrading }     from './ui/ColorGrading'
+import { MindARManager }    from './xr/MindARManager'
 import * as THREE           from 'three'
 
 const APP_VERSION: string = __APP_VERSION__
@@ -55,10 +56,11 @@ async function main(): Promise<void> {
   if (vb) vb.textContent = `v${APP_VERSION}`
 
   setProgress(10, 'Инициализация 3D...')
-  const appEl   = document.getElementById('app')!
-  const scene   = new SceneManager(appEl)
-  const winMgr  = new WindowManager(scene.scene, scene.camera)
-  const taskbar = new TaskBar3D()
+  const appEl    = document.getElementById('app')!
+  const scene    = new SceneManager(appEl)
+  const mindAR   = new MindARManager()
+  const winMgr   = new WindowManager(scene.scene, scene.camera)
+  const taskbar  = new TaskBar3D()
   const settingsHtml = new SettingsWindow()
   const settingsXR   = new SettingsXRWindow()
   const vrRoom   = new VRRoom()
@@ -87,11 +89,12 @@ async function main(): Promise<void> {
 
   winMgr.add(settingsXR.window)
 
-  let cameraApp: CameraApp | null = null
-  let stereoActive = false
+  // Текущая активная камера (наша или MindAR)
+  let activeCamera: THREE.PerspectiveCamera = scene.camera
 
+  // Спавним окно перед активной камерой
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
-    const cam = scene.camera
+    const cam = activeCamera
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
     const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
     const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
@@ -103,6 +106,9 @@ async function main(): Promise<void> {
     win.group.quaternion.copy(cam.quaternion)
   }
 
+  let cameraApp: CameraApp | null = null
+  let stereoActive = false
+
   function openCamera(): void {
     if (cameraApp) {
       cameraApp.window.group.visible = !cameraApp.window.group.visible
@@ -112,9 +118,7 @@ async function main(): Promise<void> {
     cameraApp = new CameraApp(scene.renderer)
     spawnInFront(cameraApp.window, 0.30, 0.05, 1.5)
     cameraApp.window.onClose = () => {
-      winMgr.remove(cameraApp!.window)
-      cameraApp = null
-      taskbar.setActive('📷', false)
+      winMgr.remove(cameraApp!.window); cameraApp = null; taskbar.setActive('📷', false)
     }
     cameraApp.onSwitchCamera = async () => {
       await tracker.switchNextCamera()
@@ -122,14 +126,12 @@ async function main(): Promise<void> {
       if (cameraApp) cameraApp.setVideo(tracker.getVideoElement())
     }
     if (videoReady) cameraApp.setVideo(tracker.getVideoElement())
-    winMgr.add(cameraApp.window)
-    taskbar.setActive('📷', true)
+    winMgr.add(cameraApp.window); taskbar.setActive('📷', true)
   }
 
   function toggleRoom(): void {
     const on = !vrRoom.isVisible(); vrRoom.setVisible(on)
-    taskbar.setActive('🏠', on)
-    toast(on ? '🏠 VR комната' : '📷 AR режим')
+    taskbar.setActive('🏠', on); toast(on ? '🏠 VR комната' : '📷 AR режим')
   }
 
   function toggleVR(): void {
@@ -148,8 +150,7 @@ async function main(): Promise<void> {
 
   function openSettingsXR(): void {
     if (!settingsXR.isOpen()) spawnInFront(settingsXR.window, -0.40, 0.05, 1.5)
-    settingsXR.toggle()
-    taskbar.setActive('⚙️', settingsXR.isOpen())
+    settingsXR.toggle(); taskbar.setActive('⚙️', settingsXR.isOpen())
   }
 
   function closeAllWindows(): void {
@@ -160,9 +161,51 @@ async function main(): Promise<void> {
     toast('✕ Все окна закрыты')
   }
 
+  // ── AR маркер ──────────────────────────────────────────────────────────────
+  async function toggleAR(): Promise<void> {
+    if (mindAR.isActive) {
+      toast('AR уже активен — наведи на маркер')
+      return
+    }
+    toast('📍 Загрузка AR...')
+    try {
+      const { camera: arCam, renderer: arRend } = await mindAR.start(
+        appEl,
+        scene.scene,
+        '/mobile-xr/targets/marker.mind'
+      )
+      activeCamera = arCam
+      winMgr        // обновляем менеджер окон на AR камеру
+      taskbar.setActive('📍', true)
+      toast('✅ AR активен! Наведи на маркер — окна зависнут в пространстве')
+
+      // Когда маркер найден — спавним окна относительно якоря
+      const anchor = mindAR.anchor3D!
+      const checkSpawn = setInterval(() => {
+        if (!mindAR.isFound) return
+        clearInterval(checkSpawn)
+        // Тасктбар над маркером
+        taskbar.window.group.position.set(0, 0.3, 0)
+        taskbar.window.group.quaternion.identity()
+        anchor.add(taskbar.window.group)
+        toast('🎯 Окна закреплены в пространстве!')
+      }, 200)
+
+      // MindAR рендерит сам через свой RAF
+      arRend.setAnimationLoop(() => {
+        arRend.render(arRend.info.render as any, arCam)
+      })
+
+    } catch (e: any) {
+      toast('⚠️ ' + (e.message || 'AR недоступен'))
+      console.error('[AR]', e)
+    }
+  }
+
   taskbar.setButtons([
     { label: '⚙️ Настройки', onClick: openSettingsXR },
     { label: '📷 Камера',    onClick: openCamera      },
+    { label: '📍 AR маркер', onClick: toggleAR        },
     { label: '🏠 Комната',   onClick: toggleRoom      },
     { label: '👓 VR',        onClick: toggleVR        },
     { label: '✕ Закрыть',   onClick: closeAllWindows },
@@ -181,6 +224,7 @@ async function main(): Promise<void> {
     const time = performance.now() * 0.001
     const dt   = Math.min(time - prevTime, 0.05); prevTime = time
 
+    const cam = activeCamera
     const ndcOf = (lm: Landmark) => isFrontCam
       ? { ndcX: (1 - lm.x) * 2 - 1, ndcY: -(lm.y * 2 - 1) }
       : { ndcX:      lm.x  * 2 - 1, ndcY: -(lm.y * 2 - 1) }
@@ -190,15 +234,12 @@ async function main(): Promise<void> {
       rightG ? ndcOf(rightG.indexTip) : null,
     ]
     const fingerWorld = [
-      leftLM  ? landmarkToWorld(leftLM[8],  scene.camera, isFrontCam) : null,
-      rightLM ? landmarkToWorld(rightLM[8], scene.camera, isFrontCam) : null,
+      leftLM  ? landmarkToWorld(leftLM[8],  cam, isFrontCam) : null,
+      rightLM ? landmarkToWorld(rightLM[8], cam, isFrontCam) : null,
     ]
 
-    if (handsReady) {
-      winMgr.update(time, [leftG, rightG], fingerNDC, fingerWorld)
-    }
-
-    taskbar.update(time, scene.camera, fingerWorld[0] ?? fingerWorld[1] ?? null, false)
+    if (handsReady) winMgr.update(time, [leftG, rightG], fingerNDC, fingerWorld)
+    taskbar.update(time, cam, fingerWorld[0] ?? fingerWorld[1] ?? null, false)
 
     const lms = [
       { lm: leftLM,  wld: leftWLD,  g: leftG,  cursor: leftCursor,  mesh: leftMesh  },
@@ -212,7 +253,7 @@ async function main(): Promise<void> {
       mesh.setVisible(  vis && handMode === '3d')
       let pinchPt: THREE.Vector3 | null = null
       if (vis) {
-        const toWorld = (lmk: Landmark) => landmarkToWorld(lmk, scene.camera, isFrontCam)
+        const toWorld = (lmk: Landmark) => landmarkToWorld(lmk, cam, isFrontCam)
         if (handMode === 'skeleton') cursor.updateFromLandmarks(lm!, toWorld, g!.type, g!.pinchStrength, time)
         else mesh.updateFromLandmarks(lm!, wld ?? lm!, toWorld(lm![0]), isFrontCam, g!.type, g!.pinchStrength, time)
         if (g!.isGun) {
@@ -224,12 +265,12 @@ async function main(): Promise<void> {
     }
 
     particles.update(dt, pinchHands)
-    cg.renderWithGrading(() => scene.render())
+    // Рендерим только если MindAR не активен (иначе он рендерит сам)
+    if (!mindAR.isActive) cg.renderWithGrading(() => scene.render())
   }
   animate()
 
   setProgress(50, 'Запрос камеры...')
-
   const tracker = new HandTracker()
   try {
     await tracker.init(p => {
@@ -264,7 +305,6 @@ async function main(): Promise<void> {
     handsReady = true
     setProgress(100, '✅ Готово!')
     setTimeout(() => loadingScreen.classList.add('hidden'), 400)
-
   } catch (err: any) {
     console.error(err)
     setProgress(100, `⚠️ ${err.message}`)
