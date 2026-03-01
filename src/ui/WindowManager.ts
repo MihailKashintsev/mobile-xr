@@ -257,6 +257,7 @@ export class WindowManager{
 
   constructor(scene:THREE.Scene,camera:THREE.PerspectiveCamera){this.scene=scene;this.camera=camera}
   setStereoCamera(cam:THREE.PerspectiveCamera|null):void{this.stereoCamera=cam}
+  setScene(scene:THREE.Scene, camera:THREE.PerspectiveCamera):void{this.scene=scene;this.camera=camera}
   add(win:XRWindow):void{this.wins.push(win);win.addTo(this.scene)}
   remove(win:XRWindow):void{this.wins=this.wins.filter(w=>w!==win);win.removeFrom(this.scene)}
 

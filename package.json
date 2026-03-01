@@ -1,14 +1,15 @@
 {
   "name": "mobile-xr",
   "version": "1.0.0",
-  "description": "Mobile XR — WebXR hand tracking floating UI",
+  "description": "Mobile XR \u2014 WebXR hand tracking floating UI",
   "scripts": {
     "dev": "vite --host",
     "build": "tsc && vite build",
     "preview": "vite preview --host"
   },
   "dependencies": {
-    "three": "^0.160.0"
+    "three": "^0.160.0",
+    "mind-ar": "^1.2.2"
   },
   "devDependencies": {
     "@types/three": "^0.160.0",

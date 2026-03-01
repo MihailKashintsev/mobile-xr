@@ -115,7 +115,7 @@
   <div class="hud-right">
     <button class="hud-btn" id="fullscreen-btn">⛶ Полный экран</button>
     <button class="hud-btn" id="camera-btn">📷 Камера</button>
-    <button class="hud-btn" id="gyro-btn">🧭 Гироскоп</button>
+    <button class="hud-btn" id="ar-btn">🎯 AR маркер</button>
     <button class="hud-btn" id="stereo-toggle">👓 VR</button>
   </div>
 </div>
@@ -137,6 +137,8 @@ screen.orientation?.addEventListener('change', checkOrientation)
 
 </script>
 
+<!-- MindAR.js — AR маркер трекинг -->
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"></script>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
