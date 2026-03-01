@@ -49,11 +49,15 @@ export class TaskBar3D {
 
   addToScene(s: THREE.Scene): void { this.window.addTo(s) }
 
-  update(time: number, _camera: THREE.PerspectiveCamera, _fw: THREE.Vector3|null, _p: boolean): void {
+  update(time: number, camera: THREE.PerspectiveCamera, _fw: THREE.Vector3|null, _p: boolean): void {
     if (!this._initialized) {
-      // Камера всегда смотрит вдоль -Z, ставим тасктбар прямо перед ней
-      this.window.group.position.set(0, -0.32, -0.85)
-      this.window.group.quaternion.identity()
+      const fwd  = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
+      const down = new THREE.Vector3(0, -1,  0).applyQuaternion(camera.quaternion)
+      this.window.group.position
+        .copy(camera.position)
+        .addScaledVector(fwd,  0.85)
+        .addScaledVector(down, 0.32)
+      this.window.group.quaternion.copy(camera.quaternion)
       this._initialized = true
     }
     this.window.update(time)

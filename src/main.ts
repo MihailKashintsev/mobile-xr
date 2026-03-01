@@ -106,10 +106,16 @@ async function main(): Promise<void> {
   // Размещает окно перед камерой в текущем направлении взгляда
   function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
     const cam = scene.camera
-    // Камера Three.js всегда смотрит вдоль -Z в world space (нет гироскопа)
-    // Окно просто ставим перед камерой с identity rotation — оно будет смотреть на пользователя
-    win.group.position.set(offsetX, offsetY, -dist)
-    win.group.quaternion.identity()
+    // Используем текущий quaternion камеры (с гироскопом или без)
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
+    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
+    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
+    win.group.position
+      .copy(cam.position)
+      .addScaledVector(fwd, dist)
+      .addScaledVector(rgt, offsetX)
+      .addScaledVector(up,  offsetY)
+    win.group.quaternion.copy(cam.quaternion)
   }
 
   function openCamera(): void {
