@@ -304,5 +304,5 @@ async function main() {
   dismissBtn.addEventListener('click', () => updateBanner.classList.remove('show'))
 }
 
-declare const __APP_VERSION__: string
+declare const __APP_VERSION__: string // v2
 main().catch(e => console.error('Fatal:', e))
