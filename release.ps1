@@ -1,45 +1,27 @@
-$ErrorActionPreference = "Stop"
-Write-Host "=== Mobile XR Release ===" -ForegroundColor Cyan
+# release.ps1 — Windows PowerShell
+# Использование: .\release.ps1
 
-$pkg = Get-Content "package.json" | ConvertFrom-Json
+$pkg = Get-Content package.json | ConvertFrom-Json
 $current = $pkg.version
-Write-Host "Current: v$current" -ForegroundColor Yellow
+Write-Host "Текущая версия: $current"
 
-$inputVer = Read-Host "New version (X.Y.Z) or Enter for patch"
-if ([string]::IsNullOrWhiteSpace($inputVer)) {
-    $parts = $current -split "\."
-    $inputVer = "$($parts[0]).$($parts[1]).$([int]$parts[2]+1)"
-    Write-Host "Version: v$inputVer" -ForegroundColor Green
-}
-if ($inputVer -notmatch "^\d+\.\d+\.\d+$") {
-    Write-Host "Bad format, use X.Y.Z" -ForegroundColor Red; exit 1
-}
-$version = "v$inputVer"
+$parts = $current.Split('.')
+$newPatch = [int]$parts[2] + 1
+$suggested = "$($parts[0]).$($parts[1]).$newPatch"
 
-$notes = Read-Host "Changes description (Enter to skip)"
-if ([string]::IsNullOrWhiteSpace($notes)) { $notes = "Release $version" }
+$input_ver = Read-Host "Новая версия [$suggested]"
+if ([string]::IsNullOrWhiteSpace($input_ver)) { $input_ver = $suggested }
 
-Write-Host ""
-Write-Host "Release: $version" -ForegroundColor Green
-Write-Host "Notes:   $notes"
-$confirm = Read-Host "Continue? (y/N)"
-if ($confirm -ne "y" -and $confirm -ne "Y") { Write-Host "Cancelled."; exit 0 }
+$input_desc = Read-Host "Описание изменений"
+if ([string]::IsNullOrWhiteSpace($input_desc)) { $input_desc = "Release $input_ver" }
 
-Write-Host "[1/5] Updating package.json..." -ForegroundColor Cyan
-npm version $inputVer --no-git-tag-version --allow-same-version | Out-Null
+$pkg.version = $input_ver
+$pkg | ConvertTo-Json -Depth 10 | Set-Content package.json
 
-Write-Host "[2/5] Committing all changes..." -ForegroundColor Cyan
 git add -A
-git commit -m "release: $version - $notes"
-
-Write-Host "[3/5] Pushing commit..." -ForegroundColor Cyan
+git commit -m "release: v$input_ver — $input_desc"
 git push
+git tag "v$input_ver"
+git push origin "v$input_ver"
 
-Write-Host "[4/5] Creating tag $version..." -ForegroundColor Cyan
-git tag $version -m $notes
-
-Write-Host "[5/5] Pushing tag..." -ForegroundColor Cyan
-git push --tags
-
-Write-Host ""
-Write-Host "Done! Released $version" -ForegroundColor Green
+Write-Host "Готово! Версия v$input_ver опубликована."

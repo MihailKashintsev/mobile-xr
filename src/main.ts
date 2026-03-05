@@ -1,5 +1,5 @@
 import { HandTracker }      from './xr/HandTracker'
-import type { Landmark }    from './xr/HandTracker'
+import type { Landmark, HandData } from './xr/HandTracker'
 import { GestureDetector }  from './xr/GestureDetector'
 import type { GestureResult } from './xr/GestureDetector'
 import { SceneManager }     from './xr/SceneManager'
@@ -20,6 +20,9 @@ import * as THREE           from 'three'
 
 const APP_VERSION: string = __APP_VERSION__
 
+// Передаём BASE URL для MindAR (нужно для GitHub Pages /mobile-xr/)
+;(window as any).__BASE__ = (import.meta as any).env?.BASE_URL ?? '/mobile-xr/'
+
 const loadingScreen = document.getElementById('loading-screen')!
 const loadProgress  = document.getElementById('load-progress')!
 const loaderSub     = document.querySelector('.loader-sub') as HTMLElement
@@ -30,111 +33,110 @@ const leftDot       = document.getElementById('left-dot')!
 const rightDot      = document.getElementById('right-dot')!
 const stereoToggle  = document.getElementById('stereo-toggle')!
 
-function setProgress(p: number, msg?: string): void {
+function setProgress(p: number, msg?: string) {
   loadProgress.style.width = `${p}%`
   if (msg && loaderSub) loaderSub.textContent = msg
 }
-function toast(msg: string, dur = 3000): void {
+function toast(msg: string, dur = 3000) {
   const t = document.createElement('div')
   t.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);' +
     'background:rgba(8,15,26,.94);color:#dde4f5;padding:10px 18px;border-radius:10px;' +
     'font-family:-apple-system,sans-serif;font-size:.82rem;z-index:8000;' +
-    'border:1px solid rgba(79,110,247,.35);max-width:88vw;text-align:center'
-  t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), dur)
+    'border:1px solid rgba(79,110,247,.35);max-width:88vw;text-align:center;pointer-events:none'
+  t.textContent = msg; document.body.appendChild(t)
+  setTimeout(() => t.remove(), dur)
 }
 
-function landmarkToWorld(lm: Landmark, cam: THREE.PerspectiveCamera, isFront: boolean): THREE.Vector3 {
-  const ndcX = isFront ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
-  const ndcY  = -(lm.y * 2 - 1)
+function lmWorld(lm: Landmark, cam: THREE.PerspectiveCamera, front: boolean): THREE.Vector3 {
+  const nx = front ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
+  const ny = -(lm.y * 2 - 1)
   const depth = Math.max(0.38, Math.min(0.82, 0.58 - lm.z * 0.35))
-  const dir = new THREE.Vector3(ndcX, ndcY, 0.5).unproject(cam).sub(cam.position).normalize()
-  return cam.position.clone().addScaledVector(dir, depth)
+  return cam.position.clone().addScaledVector(
+    new THREE.Vector3(nx, ny, 0.5).unproject(cam).sub(cam.position).normalize(), depth)
 }
 
-async function main(): Promise<void> {
+async function main() {
   const vb = document.getElementById('version-badge')
   if (vb) vb.textContent = `v${APP_VERSION}`
 
   setProgress(10, 'Инициализация 3D...')
-  const appEl    = document.getElementById('app')!
-  const scene    = new SceneManager(appEl)
-  const mindAR   = new MindARManager()
-  const winMgr   = new WindowManager(scene.scene, scene.camera)
-  const taskbar  = new TaskBar3D()
+  const appEl  = document.getElementById('app')!
+  const scene  = new SceneManager(appEl)
+  const mindAR = new MindARManager()
+  const winMgr = new WindowManager(scene.scene, scene.camera)
+  const taskbar      = new TaskBar3D()
   const settingsHtml = new SettingsWindow()
   const settingsXR   = new SettingsXRWindow()
-  const vrRoom   = new VRRoom()
+  const vrRoom    = new VRRoom()
   const particles = new PinchParticles(scene.scene)
   settingsHtml.version = APP_VERSION
 
-  scene.scene.add(new THREE.AmbientLight(0xffffff, 0.50))
-  const sun = new THREE.DirectionalLight(0xffffff, 0.80)
+  scene.scene.add(new THREE.AmbientLight(0xffffff, 0.5))
+  const sun = new THREE.DirectionalLight(0xffffff, 0.8)
   sun.position.set(1, 3, 2); scene.scene.add(sun)
-
   vrRoom.addToScene(scene.scene)
   taskbar.addToScene(scene.scene)
+
   const cg = new ColorGrading(scene.renderer.domElement)
   settingsHtml.setColorGrading(cg)
   settingsXR.setColorGrading(cg)
 
   let handMode: HandRenderMode = 'skeleton'
-  const leftCursor  = new HandCursor(0x06b6d4); const rightCursor = new HandCursor(0xa78bfa)
-  const leftMesh    = new HandMesh();            const rightMesh   = new HandMesh()
-  leftCursor.addToScene(scene.scene);  rightCursor.addToScene(scene.scene)
-  leftMesh.addToScene(scene.scene);    rightMesh.addToScene(scene.scene)
-  leftCursor.setVisible(false);  rightCursor.setVisible(false)
-  leftMesh.setVisible(false);    rightMesh.setVisible(false)
+  const lCursor = new HandCursor(0x06b6d4), rCursor = new HandCursor(0xa78bfa)
+  const lMesh   = new HandMesh(),           rMesh   = new HandMesh()
+  lCursor.addToScene(scene.scene); rCursor.addToScene(scene.scene)
+  lMesh.addToScene(scene.scene);   rMesh.addToScene(scene.scene)
+  lCursor.setVisible(false); rCursor.setVisible(false)
+  lMesh.setVisible(false);   rMesh.setVisible(false)
   settingsHtml.onHandMode = (m: HandRenderMode) => { handMode = m }
   settingsXR.onHandMode   = (m: HandRenderMode) => { handMode = m }
 
   winMgr.add(settingsXR.window)
 
-  // Текущая активная камера (наша или MindAR)
-  let activeCamera: THREE.PerspectiveCamera = scene.camera
+  let cameraApp: CameraApp | null = null
+  let stereoActive = false
+  let arActive = false
 
-  // Спавним окно перед активной камерой
-  function spawnInFront(win: XRWindow, offsetX = 0, offsetY = 0, dist = 1.5): void {
-    const cam = activeCamera
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion)
-    const rgt = new THREE.Vector3(1, 0,  0).applyQuaternion(cam.quaternion)
-    const up  = new THREE.Vector3(0, 1,  0).applyQuaternion(cam.quaternion)
-    win.group.position
-      .copy(cam.position)
-      .addScaledVector(fwd, dist)
-      .addScaledVector(rgt, offsetX)
-      .addScaledVector(up,  offsetY)
+  // Используем активную камеру (нашу или MindAR)
+  function getCamera(): THREE.PerspectiveCamera {
+    return (arActive && mindAR.arCamera) ? mindAR.arCamera : scene.camera
+  }
+
+  function spawnInFront(win: XRWindow, ox = 0, oy = 0, dist = 1.5) {
+    const cam = getCamera()
+    const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(cam.quaternion)
+    const rgt = new THREE.Vector3(1,0, 0).applyQuaternion(cam.quaternion)
+    const up  = new THREE.Vector3(0,1, 0).applyQuaternion(cam.quaternion)
+    win.group.position.copy(cam.position)
+      .addScaledVector(fwd, dist).addScaledVector(rgt, ox).addScaledVector(up, oy)
     win.group.quaternion.copy(cam.quaternion)
   }
 
-  let cameraApp: CameraApp | null = null
-  let stereoActive = false
-
-  function openCamera(): void {
+  function openCamera() {
     if (cameraApp) {
       cameraApp.window.group.visible = !cameraApp.window.group.visible
-      taskbar.setActive('📷', cameraApp.window.group.visible)
-      return
+      taskbar.setActive('📷', cameraApp.window.group.visible); return
     }
     cameraApp = new CameraApp(scene.renderer)
-    spawnInFront(cameraApp.window, 0.30, 0.05, 1.5)
+    spawnInFront(cameraApp.window, 0.3, 0.05, 1.5)
     cameraApp.window.onClose = () => {
       winMgr.remove(cameraApp!.window); cameraApp = null; taskbar.setActive('📷', false)
     }
     cameraApp.onSwitchCamera = async () => {
       await tracker.switchNextCamera()
       scene.setupARBackground(tracker.getVideoElement())
-      if (cameraApp) cameraApp.setVideo(tracker.getVideoElement())
+      if (cameraApp) (cameraApp as any).setVideo(tracker.getVideoElement())
     }
     if (videoReady) cameraApp.setVideo(tracker.getVideoElement())
     winMgr.add(cameraApp.window); taskbar.setActive('📷', true)
   }
 
-  function toggleRoom(): void {
+  function toggleRoom() {
     const on = !vrRoom.isVisible(); vrRoom.setVisible(on)
     taskbar.setActive('🏠', on); toast(on ? '🏠 VR комната' : '📷 AR режим')
   }
 
-  function toggleVR(): void {
+  function toggleVR() {
     stereoActive = scene.toggleStereo()
     taskbar.setActive('👓', stereoActive)
     stereoToggle.textContent = stereoActive ? '⚙️ Калибровка' : '👓 VR'
@@ -148,12 +150,12 @@ async function main(): Promise<void> {
     }
   }
 
-  function openSettingsXR(): void {
-    if (!settingsXR.isOpen()) spawnInFront(settingsXR.window, -0.40, 0.05, 1.5)
+  function openSettings() {
+    if (!settingsXR.isOpen()) spawnInFront(settingsXR.window, -0.4, 0.05, 1.5)
     settingsXR.toggle(); taskbar.setActive('⚙️', settingsXR.isOpen())
   }
 
-  function closeAllWindows(): void {
+  function closeAll() {
     winMgr.hideAll([settingsXR.window, taskbar.window])
     if (cameraApp) { cameraApp.window.group.visible = false; taskbar.setActive('📷', false) }
     settingsXR.close(); taskbar.setActive('⚙️', false)
@@ -161,112 +163,94 @@ async function main(): Promise<void> {
     toast('✕ Все окна закрыты')
   }
 
-  // ── AR маркер ──────────────────────────────────────────────────────────────
-  async function toggleAR(): Promise<void> {
-    if (mindAR.isActive) {
-      toast('AR уже активен — наведи на маркер')
+  async function toggleAR() {
+    if (arActive) {
+      toast('AR уже активен — наведи на распечатанный маркер')
       return
     }
-    toast('📍 Загрузка AR...')
-    try {
-      const { camera: arCam, renderer: arRend } = await mindAR.start(
-        appEl,
-        scene.scene,
-        '/mobile-xr/targets/marker.mind'
-      )
-      activeCamera = arCam
-      winMgr        // обновляем менеджер окон на AR камеру
-      taskbar.setActive('📍', true)
-      toast('✅ AR активен! Наведи на маркер — окна зависнут в пространстве')
+    toast('📍 Загрузка AR трекинга...')
+    const ok = await mindAR.start(appEl, scene.scene)
+    if (!ok) { toast('⚠️ AR недоступен. Нет marker.mind файла или ошибка CDN'); return }
+    arActive = true
+    taskbar.setActive('📍', true)
+    toast('✅ AR активен! Наведи на маркер')
 
-      // Когда маркер найден — спавним окна относительно якоря
+    // Когда маркер найден первый раз — перемещаем окна к нему
+    let spawned = false
+    const check = setInterval(() => {
+      if (!mindAR.isFound || spawned) return
+      spawned = true; clearInterval(check)
       const anchor = mindAR.anchor3D!
-      const checkSpawn = setInterval(() => {
-        if (!mindAR.isFound) return
-        clearInterval(checkSpawn)
-        // Тасктбар над маркером
-        taskbar.window.group.position.set(0, 0.3, 0)
-        taskbar.window.group.quaternion.identity()
-        anchor.add(taskbar.window.group)
-        toast('🎯 Окна закреплены в пространстве!')
-      }, 200)
-
-      // MindAR рендерит сам через свой RAF
-      arRend.setAnimationLoop(() => {
-        arRend.render(arRend.info.render as any, arCam)
-      })
-
-    } catch (e: any) {
-      toast('⚠️ ' + (e.message || 'AR недоступен'))
-      console.error('[AR]', e)
-    }
+      // Тасктбар над маркером
+      taskbar.window.group.removeFromParent()
+      taskbar.window.group.position.set(0, 0.25, 0)
+      taskbar.window.group.quaternion.identity()
+      anchor.add(taskbar.window.group)
+      toast('🎯 Окна зафиксированы в пространстве!')
+    }, 100)
   }
 
   taskbar.setButtons([
-    { label: '⚙️ Настройки', onClick: openSettingsXR },
-    { label: '📷 Камера',    onClick: openCamera      },
-    { label: '📍 AR маркер', onClick: toggleAR        },
-    { label: '🏠 Комната',   onClick: toggleRoom      },
-    { label: '👓 VR',        onClick: toggleVR        },
-    { label: '✕ Закрыть',   onClick: closeAllWindows },
+    { label: '⚙️',   onClick: openSettings },
+    { label: '📷',   onClick: openCamera   },
+    { label: '📍 AR', onClick: toggleAR    },
+    { label: '🏠',   onClick: toggleRoom   },
+    { label: '👓',   onClick: toggleVR     },
+    { label: '✕',    onClick: closeAll     },
   ])
   winMgr.add(taskbar.window)
 
-  let leftG:   GestureResult | null = null; let rightG:  GestureResult | null = null
-  let leftLM:  Landmark[] | null = null;    let rightLM: Landmark[] | null = null
-  let leftWLD: Landmark[] | null = null;    let rightWLD:Landmark[] | null = null
-  let handsReady = false, videoReady = false, isFrontCam = false
+  let leftG:  GestureResult | null = null, rightG:  GestureResult | null = null
+  let leftLM: Landmark[] | null = null,    rightLM: Landmark[] | null = null
+  let leftWD: Landmark[] | null = null,    rightWD: Landmark[] | null = null
+  let handsReady = false, videoReady = false, isFront = false
   const gesture = new GestureDetector()
-  let prevTime  = performance.now() * 0.001
+  let prevT = performance.now() * 0.001
 
-  function animate(): void {
+  function animate() {
     requestAnimationFrame(animate)
-    const time = performance.now() * 0.001
-    const dt   = Math.min(time - prevTime, 0.05); prevTime = time
+    const t  = performance.now() * 0.001
+    const dt = Math.min(t - prevT, 0.05); prevT = t
+    const cam = getCamera()
 
-    const cam = activeCamera
-    const ndcOf = (lm: Landmark) => isFrontCam
-      ? { ndcX: (1 - lm.x) * 2 - 1, ndcY: -(lm.y * 2 - 1) }
-      : { ndcX:      lm.x  * 2 - 1, ndcY: -(lm.y * 2 - 1) }
+    const ndcOf = (lm: Landmark) => isFront
+      ? { ndcX: (1-lm.x)*2-1, ndcY: -(lm.y*2-1) }
+      : { ndcX:  lm.x*2-1,    ndcY: -(lm.y*2-1) }
 
-    const fingerNDC = [
-      leftG  ? ndcOf(leftG.indexTip)  : null,
-      rightG ? ndcOf(rightG.indexTip) : null,
-    ]
-    const fingerWorld = [
-      leftLM  ? landmarkToWorld(leftLM[8],  cam, isFrontCam) : null,
-      rightLM ? landmarkToWorld(rightLM[8], cam, isFrontCam) : null,
+    const fNDC = [leftG ? ndcOf(leftG.indexTip) : null, rightG ? ndcOf(rightG.indexTip) : null]
+    const fWld = [
+      leftLM  ? lmWorld(leftLM[8],  cam, isFront) : null,
+      rightLM ? lmWorld(rightLM[8], cam, isFront) : null,
     ]
 
-    if (handsReady) winMgr.update(time, [leftG, rightG], fingerNDC, fingerWorld)
-    taskbar.update(time, cam, fingerWorld[0] ?? fingerWorld[1] ?? null, false)
+    if (handsReady) winMgr.update(t, [leftG, rightG], fNDC, fWld)
+    taskbar.update(t, cam, fWld[0] ?? fWld[1] ?? null, false)
 
-    const lms = [
-      { lm: leftLM,  wld: leftWLD,  g: leftG,  cursor: leftCursor,  mesh: leftMesh  },
-      { lm: rightLM, wld: rightWLD, g: rightG, cursor: rightCursor, mesh: rightMesh },
+    const hands = [
+      { lm: leftLM,  wd: leftWD,  g: leftG,  cursor: lCursor, mesh: lMesh },
+      { lm: rightLM, wd: rightWD, g: rightG, cursor: rCursor, mesh: rMesh },
     ]
     const pinchHands: { isPinching: boolean; pinchPoint: THREE.Vector3 | null }[] = []
-
-    for (const { lm, wld, g, cursor, mesh } of lms) {
+    for (const { lm, wd, g, cursor, mesh } of hands) {
       const vis = !!(lm && g)
       cursor.setVisible(vis && handMode === 'skeleton')
       mesh.setVisible(  vis && handMode === '3d')
-      let pinchPt: THREE.Vector3 | null = null
+      let pp: THREE.Vector3 | null = null
       if (vis) {
-        const toWorld = (lmk: Landmark) => landmarkToWorld(lmk, cam, isFrontCam)
-        if (handMode === 'skeleton') cursor.updateFromLandmarks(lm!, toWorld, g!.type, g!.pinchStrength, time)
-        else mesh.updateFromLandmarks(lm!, wld ?? lm!, toWorld(lm![0]), isFrontCam, g!.type, g!.pinchStrength, time)
+        const tw = (lmk: Landmark) => lmWorld(lmk, cam, isFront)
+        if (handMode === 'skeleton') cursor.updateFromLandmarks(lm!, tw, g!.type, g!.pinchStrength, t)
+        else mesh.updateFromLandmarks(lm!, wd ?? lm!, tw(lm![0]), isFront, g!.type, g!.pinchStrength, t)
         if (g!.isGun) {
-          const t = toWorld(lm![4]), ix = toWorld(lm![8])
-          pinchPt = new THREE.Vector3().addVectors(t, ix).multiplyScalar(0.5)
+          const th = tw(lm![4]), ix = tw(lm![8])
+          pp = new THREE.Vector3().addVectors(th, ix).multiplyScalar(0.5)
         }
       }
-      pinchHands.push({ isPinching: vis && (g?.isGun === true), pinchPoint: pinchPt })
+      pinchHands.push({ isPinching: vis && !!g?.isGun, pinchPoint: pp })
     }
-
     particles.update(dt, pinchHands)
-    // Рендерим только если MindAR не активен (иначе он рендерит сам)
-    if (!mindAR.isActive) cg.renderWithGrading(() => scene.render())
+
+    // Рендерим только если MindAR не активен (он рендерит сам)
+    if (!arActive) cg.renderWithGrading(() => scene.render())
   }
   animate()
 
@@ -274,33 +258,29 @@ async function main(): Promise<void> {
   const tracker = new HandTracker()
   try {
     await tracker.init(p => {
-      const msgs: [number, string][] = [
-        [0,'Загрузка MediaPipe...'],[35,'Библиотека...'],[50,'WASM...'],[80,'Камера...'],[100,'Готово!']
-      ]
-      setProgress(50 + p * 0.5, [...msgs].reverse().find(([k]) => p >= k)?.[1] ?? '')
+      const msgs: [number,string][] = [[0,'Загрузка MediaPipe...'],[35,'Библиотека...'],[50,'WASM...'],[80,'Камера...'],[100,'Готово!']]
+      setProgress(50 + p*0.5, [...msgs].reverse().find(([k]) => p>=k)?.[1] ?? '')
     })
     scene.setupARBackground(tracker.getVideoElement())
-    isFrontCam = tracker.isFront()
-    videoReady = true
-    ;(cameraApp as CameraApp | null)?.setVideo(tracker.getVideoElement())
+    isFront = tracker.isFront(); videoReady = true
+    if (cameraApp) (cameraApp as any).setVideo(tracker.getVideoElement())
 
-    tracker.onHands((hands: import('./xr/HandTracker').HandData[]) => {
-      leftG = null; rightG = null; leftLM = null; rightLM = null; leftWLD = null; rightWLD = null
-      isFrontCam = tracker.isFront()
-      for (const hand of hands) {
-        const g    = gesture.detect(hand.landmarks)
-        const side = isFrontCam ? hand.handedness : (hand.handedness === 'Left' ? 'Right' : 'Left')
-        if (side === 'Left') { leftG  = g; leftLM  = hand.landmarks; leftWLD  = hand.worldLandmarks }
-        else                 { rightG = g; rightLM = hand.landmarks; rightWLD = hand.worldLandmarks }
+    tracker.onHands((hands: HandData[]) => {
+      leftG = null; rightG = null; leftLM = null; rightLM = null; leftWD = null; rightWD = null
+      isFront = tracker.isFront()
+      for (const h of hands) {
+        const g    = gesture.detect(h.landmarks)
+        const side = isFront ? h.handedness : (h.handedness === 'Left' ? 'Right' : 'Left')
+        if (side === 'Left') { leftG  = g; leftLM  = h.landmarks; leftWD  = h.worldLandmarks }
+        else                 { rightG = g; rightLM = h.landmarks; rightWD = h.worldLandmarks }
       }
       leftDot.classList.toggle('active',  !!leftG)
       rightDot.classList.toggle('active', !!rightG)
     })
-
     settingsHtml.setTracker(tracker)
     settingsHtml.onSwitchCamera = () => {
       scene.setupARBackground(tracker.getVideoElement())
-      if (cameraApp) cameraApp.setVideo(tracker.getVideoElement())
+      if (cameraApp) (cameraApp as any).setVideo(tracker.getVideoElement())
     }
     handsReady = true
     setProgress(100, '✅ Готово!')
@@ -314,15 +294,15 @@ async function main(): Promise<void> {
 
   stereoToggle.addEventListener('click', () => stereoActive ? settingsHtml.toggle() : toggleVR())
 
-  const updater = new AutoUpdater('MihailKashintsev', 'mobile-xr', APP_VERSION)
-  updater.startAutoCheck(rel => {
+  const upd = new AutoUpdater('MihailKashintsev', 'mobile-xr', APP_VERSION)
+  upd.startAutoCheck(rel => {
     updateBanner.classList.add('show')
     const sp = updateBanner.querySelector('span')
-    if (sp) sp.textContent = `🆕 Версия ${rel.tag_name} — обновите страницу`
+    if (sp) sp.textContent = `🆕 ${rel.tag_name} — обновите страницу`
   })
   updateBtn.addEventListener('click', () => location.reload())
   dismissBtn.addEventListener('click', () => updateBanner.classList.remove('show'))
 }
 
 declare const __APP_VERSION__: string
-main().catch(err => console.error('Fatal:', err))
+main().catch(e => console.error('Fatal:', e))

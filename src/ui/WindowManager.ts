@@ -53,19 +53,21 @@ function titleTex(t:string):THREE.CanvasTexture{
 function closeTex():THREE.CanvasTexture{
   return canvasTex((ctx,W,H)=>{
     ctx.fillStyle='#7f1d1d'
-    ctx.beginPath();ctx.roundRect(3,3,W-6,H-6,10);ctx.fill()
+    ctx.beginPath();ctx.roundRect(3,3,W-6,H-6,14);ctx.fill()
     const g=ctx.createLinearGradient(0,0,0,H*.5)
     g.addColorStop(0,'rgba(255,255,255,.18)');g.addColorStop(1,'rgba(255,255,255,0)')
-    ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(3,3,W-6,H*.5,10);ctx.fill()
+    ctx.fillStyle=g;ctx.beginPath();ctx.roundRect(3,3,W-6,H*.5,14);ctx.fill()
+    ctx.strokeStyle='rgba(255,100,100,.35)';ctx.lineWidth=1.5
+    ctx.beginPath();ctx.roundRect(3,3,W-6,H-6,14);ctx.stroke()
     ctx.fillStyle='rgba(255,200,200,.96)'
-    ctx.font=`bold ${Math.round(H*.62)}px sans-serif`
-    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✕',W/2,H/2+1)
-  },128,128)
+    ctx.font=`bold ${Math.round(H*.52)}px sans-serif`
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('✕  закрыть',W/2,H/2+1)
+  },384,96)
 }
 
 const C={bg:0x080f1a,titleBg:0x0c1525,dragBg:0x060c15,border:0x1a2840,accent:0x4f6ef7}
 const PD=0.022, TH=0.100, BRH=0.072, BD=0.026
-const HOLD_TIME=2.0
+const HOLD_TIME=0.18
 
 interface BtnEntry{mesh:THREE.Mesh;btn:WinButton;holdProgress:number}
 interface DragState{win:XRWindow;hi:number;planeZ:number;ox:number;oy:number}
@@ -100,10 +102,10 @@ export class XRWindow{
     al.position.set(0,H/2-TH,.002);this.group.add(al)
 
     if(this.closeable){
-      const SZ=0.074
-      this.closeBtn=new THREE.Mesh(new THREE.BoxGeometry(SZ,SZ,BD+.008),
+      const CBW=0.26, CBH=0.082  // широкая кнопка закрытия
+      this.closeBtn=new THREE.Mesh(new THREE.BoxGeometry(CBW,CBH,BD+.008),
         new THREE.MeshPhysicalMaterial({map:closeTex(),transparent:true,opacity:.97,roughness:.10}))
-      this.closeBtn.position.set(W/2-SZ/2-.008,H/2-TH/2,PD/2+BD/2+.006)
+      this.closeBtn.position.set(W/2-CBW/2-.010,H/2-TH/2,PD/2+BD/2+.006)
       this.group.add(this.closeBtn)
     }
 
@@ -164,7 +166,7 @@ export class XRWindow{
     if(!this.closeable||!this.closeBtn)return false
     this.closeBtn.updateWorldMatrix(true,false)
     const l=this.closeBtn.worldToLocal(fw.clone())
-    return Math.abs(l.x)<.06&&Math.abs(l.y)<.06&&l.z<.22&&l.z>-.06
+    return Math.abs(l.x)<.16&&Math.abs(l.y)<.08&&l.z<.22&&l.z>-.06
   }
 
   hitButtonByFinger(fw:THREE.Vector3):BtnEntry|null{
