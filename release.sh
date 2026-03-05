@@ -1,31 +1,45 @@
 #!/bin/bash
-# release.sh — macOS / Linux
+# release.sh — Mac/Linux (bash/zsh)
 # Использование: bash release.sh
 
-CURRENT=$(node -p "require('./package.json').version")
+PKG="package.json"
+CURRENT=$(node -e "console.log(require('./$PKG').version)" 2>/dev/null || grep '"version"' $PKG | head -1 | sed 's/.*"\([0-9.]*\)".*/\1/')
+
+echo ""
+echo "Mobile XR Release Tool"
 echo "Текущая версия: $CURRENT"
 
-IFS='.' read -ra PARTS <<< "$CURRENT"
-SUGGESTED="${PARTS[0]}.${PARTS[1]}.$((PARTS[2]+1))"
+# Предлагаем patch bump
+IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+SUGGESTED="$MAJOR.$MINOR.$((PATCH + 1))"
 
-read -rp "Новая версия [$SUGGESTED]: " INPUT_VER
-INPUT_VER=${INPUT_VER:-$SUGGESTED}
+printf "Новая версия [$SUGGESTED]: "
+read VERSION
+VERSION=${VERSION:-$SUGGESTED}
 
-read -rp "Описание изменений: " INPUT_DESC
-INPUT_DESC=${INPUT_DESC:-"Release $INPUT_VER"}
+printf "Описание изменений: "
+read MESSAGE
+MESSAGE=${MESSAGE:-"Release $VERSION"}
 
 # Обновляем package.json
 node -e "
 const fs = require('fs');
-const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
-pkg.version = '$INPUT_VER';
-fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+const pkg = JSON.parse(fs.readFileSync('$PKG', 'utf8'));
+pkg.version = '$VERSION';
+fs.writeFileSync('$PKG', JSON.stringify(pkg, null, 2) + '\n');
+console.log('package.json обновлён до v$VERSION');
 "
 
-git add -A
-git commit -m "release: v$INPUT_VER — $INPUT_DESC"
-git push
-git tag "v$INPUT_VER"
-git push origin "v$INPUT_VER"
+echo ""
+echo "Публикация v$VERSION..."
 
-echo "Готово! Версия v$INPUT_VER опубликована."
+git add -A
+git commit -m "release: v$VERSION — $MESSAGE"
+git push
+
+git tag "v$VERSION"
+git push origin "v$VERSION"
+
+echo ""
+echo "Готово! v$VERSION опубликована"
+echo "GitHub Actions собирает и деплоит..."

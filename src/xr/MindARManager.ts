@@ -13,7 +13,9 @@ async function loadScript(): Promise<void> {
     const s = document.createElement('script')
     s.src = MINDAR_CDN
     s.onload  = () => { _scriptLoaded = true; res() }
-    s.onerror = () => rej(new Error('Не удалось загрузить MindAR CDN'))
+    s.onerror = () => rej(new Error('Не удалось загрузить MindAR CDN — проверь интернет'))
+    // Таймаут 15 сек
+    setTimeout(() => rej(new Error('MindAR CDN timeout — медленный интернет')), 15000)
     document.head.appendChild(s)
   })
 }
@@ -39,13 +41,12 @@ export class MindARManager {
   async start(container: HTMLElement, threeScene: THREE.Scene): Promise<boolean> {
     try {
       await loadScript()
-    } catch (e) {
-      console.error('[MindAR] CDN load failed:', e)
-      return false
+    } catch (e: any) {
+      throw new Error('CDN: ' + e.message)
     }
 
     const MindARThree = (window as any).MindARThree
-    if (!MindARThree) return false
+    if (!MindARThree) throw new Error('MindARThree не определён после загрузки CDN')
 
     const mindFile = '/mobile-xr/targets/marker.mind'
 
@@ -83,16 +84,10 @@ export class MindARManager {
     try {
       await this._mindar.start()
       this._active = true
-
-      // MindAR рендерит через свой RAF
-      renderer.setAnimationLoop(() => {
-        renderer.render(scene, camera)
-      })
-
+      renderer.setAnimationLoop(() => renderer.render(scene, camera))
       return true
-    } catch (e) {
-      console.error('[MindAR] start failed:', e)
-      return false
+    } catch (e: any) {
+      throw new Error('MindAR.start(): ' + (e?.message || String(e)))
     }
   }
 

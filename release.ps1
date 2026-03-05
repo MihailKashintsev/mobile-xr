@@ -1,27 +1,32 @@
 # release.ps1 — Windows PowerShell
-# Использование: .\release.ps1
+param([string]$Version = "", [string]$Message = "")
 
-$pkg = Get-Content package.json | ConvertFrom-Json
+$pkg = Get-Content "package.json" | ConvertFrom-Json
 $current = $pkg.version
-Write-Host "Текущая версия: $current"
+$parts = $current -split "\."
+$suggested = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
 
-$parts = $current.Split('.')
-$newPatch = [int]$parts[2] + 1
-$suggested = "$($parts[0]).$($parts[1]).$newPatch"
+Write-Host "`nMobile XR Release Tool" -ForegroundColor Cyan
+Write-Host "Текущая версия: $current" -ForegroundColor Yellow
 
-$input_ver = Read-Host "Новая версия [$suggested]"
-if ([string]::IsNullOrWhiteSpace($input_ver)) { $input_ver = $suggested }
+if (-not $Version) {
+    Write-Host "Новая версия [$suggested]: " -ForegroundColor Green -NoNewline
+    $input = Read-Host
+    $Version = if ($input -eq "") { $suggested } else { $input }
+}
+if (-not $Message) {
+    Write-Host "Описание: " -ForegroundColor Green -NoNewline
+    $Message = Read-Host
+    if (-not $Message) { $Message = "Release $Version" }
+}
 
-$input_desc = Read-Host "Описание изменений"
-if ([string]::IsNullOrWhiteSpace($input_desc)) { $input_desc = "Release $input_ver" }
-
-$pkg.version = $input_ver
-$pkg | ConvertTo-Json -Depth 10 | Set-Content package.json
+$pkg.version = $Version
+$pkg | ConvertTo-Json -Depth 10 | Set-Content "package.json"
 
 git add -A
-git commit -m "release: v$input_ver — $input_desc"
+git commit -m "release: v$Version — $Message"
 git push
-git tag "v$input_ver"
-git push origin "v$input_ver"
+git tag "v$Version"
+git push origin "v$Version"
 
-Write-Host "Готово! Версия v$input_ver опубликована."
+Write-Host "`nГотово! v$Version опубликована" -ForegroundColor Green
