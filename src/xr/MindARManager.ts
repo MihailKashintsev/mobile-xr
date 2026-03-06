@@ -4,20 +4,35 @@
  */
 import * as THREE from 'three'
 
-const MINDAR_CDN = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
 let _scriptLoaded = false
 
 async function loadScript(): Promise<void> {
-  if (_scriptLoaded || (window as any).MindARThree) { _scriptLoaded = true; return }
-  return new Promise((res, rej) => {
-    const s = document.createElement('script')
-    s.src = MINDAR_CDN
-    s.onload  = () => { _scriptLoaded = true; res() }
-    s.onerror = () => rej(new Error('Не удалось загрузить MindAR CDN — проверь интернет'))
-    // Таймаут 15 сек
-    setTimeout(() => rej(new Error('MindAR CDN timeout — медленный интернет')), 15000)
-    document.head.appendChild(s)
-  })
+  if (_scriptLoaded) return
+  
+  // Пробуем несколько CDN
+  const CDNS = [
+    'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js',
+    'https://unpkg.com/mind-ar@1.2.5/dist/mindar-image-three.prod.js',
+  ]
+  
+  for (const url of CDNS) {
+    try {
+      await new Promise<void>((res, rej) => {
+        const s = document.createElement('script')
+        s.src = url
+        s.onload = () => res()
+        s.onerror = () => rej(new Error('Failed: ' + url))
+        setTimeout(() => rej(new Error('Timeout: ' + url)), 20000)
+        document.head.appendChild(s)
+      })
+      console.log('[MindAR] Loaded from:', url)
+      _scriptLoaded = true
+      return
+    } catch(e) {
+      console.warn('[MindAR] CDN failed, trying next:', e)
+    }
+  }
+  throw new Error('Все CDN недоступны')
 }
 
 export class MindARManager {
@@ -45,8 +60,14 @@ export class MindARManager {
       throw new Error('CDN: ' + e.message)
     }
 
-    const MindARThree = (window as any).MindARThree
-    if (!MindARThree) throw new Error('MindARThree не определён после загрузки CDN')
+    // MindAR CDN экспортирует в window.MINDAR.IMAGE.MindARThree
+    const w = window as any
+    const MindARThree = w.MindARThree 
+      ?? w.MINDAR?.IMAGE?.MindARThree
+      ?? w.mindar?.IMAGE?.MindARThree
+    
+    console.log('[MindAR] window keys with MIND:', Object.keys(w).filter(k => k.toLowerCase().includes('mind')))
+    if (!MindARThree) throw new Error('MindARThree не найден. Доступно: ' + Object.keys(w).filter(k => k.toLowerCase().includes('mind')).join(', '))
 
     // Raw GitHub всегда отдаёт бинарные файлы правильно
     const mindFile = 'https://raw.githubusercontent.com/MihailKashintsev/mobile-xr/main/public/targets/marker.mind'
