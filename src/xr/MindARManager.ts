@@ -48,7 +48,8 @@ export class MindARManager {
     const MindARThree = (window as any).MindARThree
     if (!MindARThree) throw new Error('MindARThree не определён после загрузки CDN')
 
-    const mindFile = '/mobile-xr/targets/marker.mind'
+    // Raw GitHub всегда отдаёт бинарные файлы правильно
+    const mindFile = 'https://raw.githubusercontent.com/MihailKashintsev/mobile-xr/main/public/targets/marker.mind'
 
     this._mindar = new MindARThree({
       container,
