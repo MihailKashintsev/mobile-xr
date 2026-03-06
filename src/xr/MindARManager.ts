@@ -2,43 +2,57 @@ import * as THREE from 'three'
 
 let _loaded = false
 
-async function loadMindAR(): Promise<any> {
+// MindAR загружается через <script> в index.html — ждём пока появится в window
+async function loadMindAR(): Promise<void> {
   if (_loaded) return
-
-  await new Promise<void>((res, rej) => {
-    if (document.querySelector('script[data-mindar]')) { res(); return }
-    const s = document.createElement('script')
-    s.setAttribute('data-mindar', '1')
-    s.src = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
-    s.onload = () => { _loaded = true; res() }
-    s.onerror = () => rej(new Error('MindAR CDN недоступен'))
-    setTimeout(() => rej(new Error('MindAR CDN timeout')), 20000)
-    document.head.appendChild(s)
-  })
+  // Ждём максимум 10 сек пока скрипт из index.html загрузится
+  for (let i = 0; i < 100; i++) {
+    if (getMindARThree()) { _loaded = true; return }
+    await new Promise(r => setTimeout(r, 100))
+  }
+  throw new Error('MindAR не загрузился за 10 сек')
 }
 
 function getMindARThree(): any {
   const w = window as any
-  // Логируем всё что есть в window после загрузки
-  const newKeys = Object.keys(w).filter(k =>
-    !['window','document','navigator','location','history','screen',
-      'performance','console','fetch','XMLHttpRequest','WebSocket',
-      'Promise','Array','Object','String','Number','Boolean','Symbol',
-      'Map','Set','WeakMap','WeakSet','Proxy','Reflect','JSON','Math',
-      'Date','RegExp','Error','TypeError','RangeError','parseInt',
-      'parseFloat','isNaN','isFinite','encodeURI','decodeURI',
-      'setTimeout','setInterval','clearTimeout','clearInterval',
-      'requestAnimationFrame','cancelAnimationFrame','alert','confirm',
-      'THREE','MediaPipe','HandLandmarker','tf','tflite'
-    ].includes(k)
-  )
-  console.log('[MindAR] window keys after load:', newKeys.join(', '))
 
-  return w.MindARThree
-    ?? w.MINDAR?.IMAGE?.MindARThree
-    ?? w.MindAR?.IMAGE?.MindARThree
-    ?? w['mindar']?.IMAGE?.MindARThree
-    ?? null
+  // Проверяем все возможные места
+  const candidates = [
+    w.MindARThree,
+    w.MINDAR?.IMAGE?.MindARThree,
+    w.MindAR?.IMAGE?.MindARThree,
+    w.mindar?.IMAGE?.MindARThree,
+    w.Module?.MindARThree,
+  ].filter(Boolean)
+
+  if (candidates.length > 0) return candidates[0]
+
+  // Последний шанс — ищем в Module
+  const mod = w.Module
+  if (mod) {
+    console.log('[MindAR] Module keys:', Object.keys(mod).slice(0, 30).join(', '))
+    for (const key of Object.keys(mod)) {
+      if (key.toLowerCase().includes('mindar') || key.toLowerCase().includes('three')) {
+        console.log('[MindAR] Found in Module:', key, typeof mod[key])
+        return mod[key]
+      }
+    }
+  }
+
+  // Ищем по всему window
+  for (const key of Object.keys(w)) {
+    const val = w[key]
+    if (val && typeof val === 'function' && key.toLowerCase().includes('mind')) {
+      console.log('[MindAR] Found in window:', key)
+      return val
+    }
+    if (val && typeof val === 'object' && val.MindARThree) {
+      console.log('[MindAR] Found nested:', key, '.MindARThree')
+      return val.MindARThree
+    }
+  }
+
+  return null
 }
 
 export class MindARManager {
@@ -60,7 +74,7 @@ export class MindARManager {
     await loadMindAR()
 
     const MindARThree = getMindARThree()
-    if (!MindARThree) throw new Error('MindARThree не найден — смотри лог 🐛')
+    if (!MindARThree) throw new Error('MindARThree не найден после загрузки')
 
     const mindFile = 'https://raw.githubusercontent.com/MihailKashintsev/mobile-xr/main/public/targets/marker.mind'
 
