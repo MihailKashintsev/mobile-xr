@@ -47,6 +47,74 @@ function toast(msg: string, dur = 3000) {
   setTimeout(() => t.remove(), dur)
 }
 
+// ── Логгер ошибок ────────────────────────────────────────────────────────────
+const _logs: string[] = []
+const _origError   = console.error.bind(console)
+const _origWarn    = console.warn.bind(console)
+const _origLog     = console.log.bind(console)
+console.error = (...a) => { _logs.push('[ERR] ' + a.join(' ')); _origError(...a) }
+console.warn  = (...a) => { _logs.push('[WRN] ' + a.join(' ')); _origWarn(...a)  }
+console.log   = (...a) => { _logs.push('[LOG] ' + a.join(' ')); _origLog(...a)   }
+window.addEventListener('error',   e => _logs.push('[ERR] ' + e.message + ' ' + e.filename + ':' + e.lineno))
+window.addEventListener('unhandledrejection', e => _logs.push('[REJ] ' + String(e.reason)))
+
+function showDebugPanel() {
+  const existing = document.getElementById('debug-panel')
+  if (existing) { existing.remove(); return }
+  const panel = document.createElement('div')
+  panel.id = 'debug-panel'
+  panel.style.cssText = [
+    'position:fixed','top:0','left:0','right:0','bottom:0','z-index:99999',
+    'background:rgba(0,0,0,.92)','color:#0f0','font-family:monospace','font-size:11px',
+    'padding:12px','overflow-y:auto','white-space:pre-wrap','word-break:break-all'
+  ].join(';')
+
+  const closeBtn = document.createElement('button')
+  closeBtn.textContent = '✕ Закрыть'
+  closeBtn.style.cssText = 'position:fixed;top:8px;right:8px;z-index:100000;padding:8px 16px;background:#333;color:#fff;border:none;border-radius:8px;font-size:14px'
+  closeBtn.onclick = () => panel.remove()
+
+  const copyBtn = document.createElement('button')
+  copyBtn.textContent = '📋 Копировать лог'
+  copyBtn.style.cssText = 'position:fixed;top:8px;left:8px;z-index:100000;padding:8px 16px;background:#1a4a1a;color:#0f0;border:1px solid #0f0;border-radius:8px;font-size:14px'
+  copyBtn.onclick = () => {
+    const text = _logs.join('\n') || 'Лог пустой'
+    navigator.clipboard.writeText(text).then(
+      () => { copyBtn.textContent = '✅ Скопировано!'; setTimeout(() => copyBtn.textContent = '📋 Копировать лог', 2000) },
+      () => {
+        // fallback для Safari
+        const ta = document.createElement('textarea')
+        ta.value = text; document.body.appendChild(ta)
+        ta.select(); document.execCommand('copy'); ta.remove()
+        copyBtn.textContent = '✅ Скопировано!'; setTimeout(() => copyBtn.textContent = '📋 Копировать лог', 2000)
+      }
+    )
+  }
+
+  const content = document.createElement('div')
+  content.style.marginTop = '44px'
+  content.textContent = _logs.length ? _logs.join('\n') : 'Лог пустой — попробуй нажать AR маркер, потом открой лог снова'
+
+  panel.appendChild(closeBtn)
+  panel.appendChild(copyBtn)
+  panel.appendChild(content)
+  document.body.appendChild(panel)
+}
+
+// Кнопка 🐛 в нижнем правом углу
+function addDebugButton() {
+  const btn = document.createElement('button')
+  btn.textContent = '🐛'
+  btn.style.cssText = [
+    'position:fixed','bottom:16px','right:16px','z-index:9999',
+    'width:44px','height:44px','border-radius:50%','border:1px solid rgba(255,255,255,.2)',
+    'background:rgba(0,0,0,.6)','color:#fff','font-size:20px','cursor:pointer',
+    'display:flex','align-items:center','justify-content:center'
+  ].join(';')
+  btn.onclick = showDebugPanel
+  document.body.appendChild(btn)
+}
+
 function lmWorld(lm: Landmark, cam: THREE.PerspectiveCamera, front: boolean): THREE.Vector3 {
   const nx = front ? (1 - lm.x) * 2 - 1 : lm.x * 2 - 1
   const ny = -(lm.y * 2 - 1)
@@ -59,6 +127,7 @@ async function main() {
   const vb = document.getElementById('version-badge')
   if (vb) vb.textContent = `v${APP_VERSION}`
 
+  addDebugButton()
   setProgress(10, 'Инициализация 3D...')
   const appEl  = document.getElementById('app')!
   const scene  = new SceneManager(appEl)
