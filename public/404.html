@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script>
+  // SPA redirect trick for GitHub Pages
+  const path = window.location.pathname;
+  // Не редиректим бинарные файлы
+  if (!path.match(/\.(mind|png|svg|ico|js|css|wasm|bin)$/)) {
+    sessionStorage.setItem('redirect', path);
+    window.location.replace('/mobile-xr/');
+  }
+</script>
+</head>
+</html>
