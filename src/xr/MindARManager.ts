@@ -1,51 +1,44 @@
 import * as THREE from 'three'
 
-let _mindARModule: any = null
+let _loaded = false
 
 async function loadMindAR(): Promise<any> {
-  if (_mindARModule) return _mindARModule
+  if (_loaded) return
 
-  // Динамический import — правильный способ загрузить ESM модуль
-  try {
-    const mod = await import(
-      /* @vite-ignore */
-      'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
-    )
-    console.log('[MindAR] ESM import OK, keys:', Object.keys(mod).join(', '))
-    _mindARModule = mod
-    return mod
-  } catch(e1) {
-    console.warn('[MindAR] ESM failed:', e1)
-  }
-
-  // Fallback: загружаем как скрипт и ищем в window
   await new Promise<void>((res, rej) => {
-    const existing = document.querySelector('script[data-mindar]')
-    if (existing) { res(); return }
+    if (document.querySelector('script[data-mindar]')) { res(); return }
     const s = document.createElement('script')
     s.setAttribute('data-mindar', '1')
     s.src = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
-    s.onload = () => res()
-    s.onerror = () => rej(new Error('CDN недоступен'))
-    setTimeout(() => rej(new Error('CDN timeout')), 20000)
+    s.onload = () => { _loaded = true; res() }
+    s.onerror = () => rej(new Error('MindAR CDN недоступен'))
+    setTimeout(() => rej(new Error('MindAR CDN timeout')), 20000)
     document.head.appendChild(s)
   })
+}
 
-  // После загрузки скрипта ищем во всех возможных местах
+function getMindARThree(): any {
   const w = window as any
-  const MindARThree = w.MindARThree
+  // Логируем всё что есть в window после загрузки
+  const newKeys = Object.keys(w).filter(k =>
+    !['window','document','navigator','location','history','screen',
+      'performance','console','fetch','XMLHttpRequest','WebSocket',
+      'Promise','Array','Object','String','Number','Boolean','Symbol',
+      'Map','Set','WeakMap','WeakSet','Proxy','Reflect','JSON','Math',
+      'Date','RegExp','Error','TypeError','RangeError','parseInt',
+      'parseFloat','isNaN','isFinite','encodeURI','decodeURI',
+      'setTimeout','setInterval','clearTimeout','clearInterval',
+      'requestAnimationFrame','cancelAnimationFrame','alert','confirm',
+      'THREE','MediaPipe','HandLandmarker','tf','tflite'
+    ].includes(k)
+  )
+  console.log('[MindAR] window keys after load:', newKeys.join(', '))
+
+  return w.MindARThree
     ?? w.MINDAR?.IMAGE?.MindARThree
-    ?? w['mindar-image-three']?.MindARThree
     ?? w.MindAR?.IMAGE?.MindARThree
-
-  if (!MindARThree) {
-    const allKeys = Object.keys(w).filter(k => !['chrome','webkit','safari'].includes(k.toLowerCase()))
-    console.log('[MindAR] All window keys (filtered):', allKeys.slice(0, 30).join(', '))
-    throw new Error('MindARThree не найден после загрузки скрипта')
-  }
-
-  _mindARModule = { MindARThree }
-  return _mindARModule
+    ?? w['mindar']?.IMAGE?.MindARThree
+    ?? null
 }
 
 export class MindARManager {
@@ -64,14 +57,10 @@ export class MindARManager {
   get arCamera():  THREE.PerspectiveCamera | null { return this._arCam }
 
   async start(container: HTMLElement, threeScene: THREE.Scene): Promise<boolean> {
-    let MindARThree: any
-    try {
-      const mod = await loadMindAR()
-      MindARThree = mod.MindARThree ?? mod.default?.MindARThree ?? mod.default
-      if (!MindARThree) throw new Error('MindARThree не найден в модуле. Ключи: ' + Object.keys(mod).join(', '))
-    } catch (e: any) {
-      throw new Error('Загрузка MindAR: ' + e.message)
-    }
+    await loadMindAR()
+
+    const MindARThree = getMindARThree()
+    if (!MindARThree) throw new Error('MindARThree не найден — смотри лог 🐛')
 
     const mindFile = 'https://raw.githubusercontent.com/MihailKashintsev/mobile-xr/main/public/targets/marker.mind'
 
@@ -98,21 +87,15 @@ export class MindARManager {
     target.onTargetFound = () => { this._found = true;  this._lostAt = 0 }
     target.onTargetLost  = () => { this._found = false; this._lostAt = performance.now() }
 
-    try {
-      await this._mindar.start()
-      this._active = true
-      renderer.setAnimationLoop(() => renderer.render(scene, camera))
-      return true
-    } catch (e: any) {
-      throw new Error('MindAR.start(): ' + (e?.message || String(e)))
-    }
+    await this._mindar.start()
+    this._active = true
+    renderer.setAnimationLoop(() => renderer.render(scene, camera))
+    return true
   }
 
   stop(): void {
-    if (this._mindar) {
-      this._arRend?.setAnimationLoop(null)
-      try { this._mindar.stop() } catch {}
-    }
+    this._arRend?.setAnimationLoop(null)
+    try { this._mindar?.stop() } catch {}
     this._active = false
     this._found  = false
     this._mindar = null
