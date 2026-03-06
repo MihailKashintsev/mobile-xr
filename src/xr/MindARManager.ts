@@ -1,38 +1,51 @@
-/**
- * MindARManager v3 — динамическая загрузка через CDN
- * Никакого npm пакета — только CDN скрипт при нажатии кнопки
- */
 import * as THREE from 'three'
 
-let _scriptLoaded = false
+let _mindARModule: any = null
 
-async function loadScript(): Promise<void> {
-  if (_scriptLoaded) return
-  
-  // Пробуем несколько CDN
-  const CDNS = [
-    'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js',
-    'https://unpkg.com/mind-ar@1.2.5/dist/mindar-image-three.prod.js',
-  ]
-  
-  for (const url of CDNS) {
-    try {
-      await new Promise<void>((res, rej) => {
-        const s = document.createElement('script')
-        s.src = url
-        s.onload = () => res()
-        s.onerror = () => rej(new Error('Failed: ' + url))
-        setTimeout(() => rej(new Error('Timeout: ' + url)), 20000)
-        document.head.appendChild(s)
-      })
-      console.log('[MindAR] Loaded from:', url)
-      _scriptLoaded = true
-      return
-    } catch(e) {
-      console.warn('[MindAR] CDN failed, trying next:', e)
-    }
+async function loadMindAR(): Promise<any> {
+  if (_mindARModule) return _mindARModule
+
+  // Динамический import — правильный способ загрузить ESM модуль
+  try {
+    const mod = await import(
+      /* @vite-ignore */
+      'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
+    )
+    console.log('[MindAR] ESM import OK, keys:', Object.keys(mod).join(', '))
+    _mindARModule = mod
+    return mod
+  } catch(e1) {
+    console.warn('[MindAR] ESM failed:', e1)
   }
-  throw new Error('Все CDN недоступны')
+
+  // Fallback: загружаем как скрипт и ищем в window
+  await new Promise<void>((res, rej) => {
+    const existing = document.querySelector('script[data-mindar]')
+    if (existing) { res(); return }
+    const s = document.createElement('script')
+    s.setAttribute('data-mindar', '1')
+    s.src = 'https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js'
+    s.onload = () => res()
+    s.onerror = () => rej(new Error('CDN недоступен'))
+    setTimeout(() => rej(new Error('CDN timeout')), 20000)
+    document.head.appendChild(s)
+  })
+
+  // После загрузки скрипта ищем во всех возможных местах
+  const w = window as any
+  const MindARThree = w.MindARThree
+    ?? w.MINDAR?.IMAGE?.MindARThree
+    ?? w['mindar-image-three']?.MindARThree
+    ?? w.MindAR?.IMAGE?.MindARThree
+
+  if (!MindARThree) {
+    const allKeys = Object.keys(w).filter(k => !['chrome','webkit','safari'].includes(k.toLowerCase()))
+    console.log('[MindAR] All window keys (filtered):', allKeys.slice(0, 30).join(', '))
+    throw new Error('MindARThree не найден после загрузки скрипта')
+  }
+
+  _mindARModule = { MindARThree }
+  return _mindARModule
 }
 
 export class MindARManager {
@@ -49,27 +62,17 @@ export class MindARManager {
   get isFound():   boolean { return this._found }
   get anchor3D():  THREE.Group | null { return this._anchor }
   get arCamera():  THREE.PerspectiveCamera | null { return this._arCam }
-  get isRecentlyVisible(): boolean {
-    return this._found || (this._lostAt > 0 && performance.now() - this._lostAt < 2000)
-  }
 
   async start(container: HTMLElement, threeScene: THREE.Scene): Promise<boolean> {
+    let MindARThree: any
     try {
-      await loadScript()
+      const mod = await loadMindAR()
+      MindARThree = mod.MindARThree ?? mod.default?.MindARThree ?? mod.default
+      if (!MindARThree) throw new Error('MindARThree не найден в модуле. Ключи: ' + Object.keys(mod).join(', '))
     } catch (e: any) {
-      throw new Error('CDN: ' + e.message)
+      throw new Error('Загрузка MindAR: ' + e.message)
     }
 
-    // MindAR CDN экспортирует в window.MINDAR.IMAGE.MindARThree
-    const w = window as any
-    const MindARThree = w.MindARThree 
-      ?? w.MINDAR?.IMAGE?.MindARThree
-      ?? w.mindar?.IMAGE?.MindARThree
-    
-    console.log('[MindAR] window keys with MIND:', Object.keys(w).filter(k => k.toLowerCase().includes('mind')))
-    if (!MindARThree) throw new Error('MindARThree не найден. Доступно: ' + Object.keys(w).filter(k => k.toLowerCase().includes('mind')).join(', '))
-
-    // Raw GitHub всегда отдаёт бинарные файлы правильно
     const mindFile = 'https://raw.githubusercontent.com/MihailKashintsev/mobile-xr/main/public/targets/marker.mind'
 
     this._mindar = new MindARThree({
@@ -86,22 +89,14 @@ export class MindARManager {
     this._arScene = scene
     this._arCam   = camera
 
-    // Наша Three.js сцена — дочерняя к MindAR сцене
     scene.add(threeScene)
 
-    // Якорь привязан к маркеру в реальном пространстве
     this._anchor = new THREE.Group()
     const target = this._mindar.addAnchor(0)
     target.group.add(this._anchor)
 
-    target.onTargetFound = () => {
-      this._found  = true
-      this._lostAt = 0
-    }
-    target.onTargetLost = () => {
-      this._found  = false
-      this._lostAt = performance.now()
-    }
+    target.onTargetFound = () => { this._found = true;  this._lostAt = 0 }
+    target.onTargetLost  = () => { this._found = false; this._lostAt = performance.now() }
 
     try {
       await this._mindar.start()
